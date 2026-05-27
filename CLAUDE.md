@@ -6,6 +6,39 @@ This document defines the architectural and development constraints for **depaud
 
 ## 1. Project Scope and Boundaries
 
+┌─────────────────────────────────────────────────────────┐
+│  Stage 0: Discovery        发现锁文件                      │
+│  扫描 repo → 识别 uv.lock / poetry.lock / package-lock... │
+└────────────────────┬────────────────────────────────────┘
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  Stage 1: Parse & Normalize   解析为统一依赖模型           │
+│  每个依赖 → {name, version, hash, source_url, direct?}    │
+└────────────────────┬────────────────────────────────────┘
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  Stage 2: Hash Verification   哈希溯源（廉价、并行）        │
+│  锁文件hash ⟷ registry实际发行版hash ⟷ 源码repo            │
+└────────────────────┬────────────────────────────────────┘
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  Stage 3: Cheap Signals       廉价信号采集（全量、并行）    │
+│  registry元数据/维护者/发布节奏/下载量/Scorecard...        │
+└────────────────────┬────────────────────────────────────┘
+                     ▼
+        ┌────── 风险打分 + 阈值过滤 ──────┐
+        │  只有可疑的少数进入下一阶段       │
+        ▼                                 
+┌─────────────────────────────────────────────────────────┐
+│  Stage 4: Deep Analysis (LLM)  深度分析（昂贵、选择性）     │
+│  clone repo → diff分析 / install脚本 / 混淆代码 / 社工迹象 │
+└────────────────────┬────────────────────────────────────┘
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  Stage 5: Report & Gate       报告 + 决定是否 fail         │
+│  SARIF / Markdown / JSON  →  exit code 控制 CI            │
+└─────────────────────────────────────────────────────────┘
+
 ### 1.1 Goal
 Automatically discover dependency lockfiles in CI workflows, traverse their dependencies, evaluate trustworthiness across multiple dimensions, identify indicators of **social engineering attacks** and **dependency injection attacks**, and fail the CI pipeline when necessary.
 
