@@ -11,6 +11,9 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = []   # intentionally empty — Stage 0 uses stdlib only
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 depaudit = "depaudit.cli.main:main"
 
