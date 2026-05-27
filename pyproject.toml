@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "depaudit"
+version = "0.1.0"
+description = "Dependency provenance and trust-auditing tool for CI pipelines"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = []   # intentionally empty — Stage 0 uses stdlib only
+
+[project.scripts]
+depaudit = "depaudit.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["depaudit"]
