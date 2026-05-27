@@ -1,0 +1,17 @@
+version: 2
+verbose: false
+all_policies: true
+exit_zero: false
+
+secret:
+  show_secrets: false
+  ignored_paths:
+    - "tests/fixtures/**"
+    - "docs/**"
+    - "**/*.md"
+    - "**/.env"
+#  ignored_matches:
+#    - name: ""
+#      match: ""
+  ignored_detectors:
+    - "Generic High Entropy Secret"
