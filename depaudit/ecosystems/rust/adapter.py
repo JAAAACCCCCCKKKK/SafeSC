@@ -1,7 +1,11 @@
-"""Rust ecosystem adapter — lockfile discovery patterns."""
+﻿"""Rust ecosystem adapter — lockfile discovery patterns."""
 
 from __future__ import annotations
 
+
+from pathlib import Path
+
+from depaudit.core.models import Dependency
 from depaudit.ecosystems.base import EcosystemAdapter
 
 
@@ -18,3 +22,9 @@ class RustAdapter(EcosystemAdapter):
             "Cargo.lock",
             "Cargo.toml",
         ]
+
+    def parse_lockfile(self, path: Path) -> list[Dependency]:
+        if path.name == "Cargo.lock":
+            from depaudit.ecosystems.rust.parsers.cargo import parse
+            return parse(path)
+        return []  # Cargo.toml is a declaration file, not a lockfile

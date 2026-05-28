@@ -1,7 +1,10 @@
-"""Java ecosystem adapter — lockfile discovery patterns (Maven, Gradle, Spring Boot)."""
+﻿"""Java ecosystem adapter — lockfile discovery patterns (Maven, Gradle, Spring Boot)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from depaudit.core.models import Dependency
 from depaudit.ecosystems.base import EcosystemAdapter
 
 
@@ -15,18 +18,22 @@ class JavaAdapter(EcosystemAdapter):
     @property
     def lockfile_globs(self) -> list[str]:
         return [
-            # Maven
             "pom.xml",
-            # Gradle build scripts
             "build.gradle",
             "build.gradle.kts",
             "settings.gradle",
             "settings.gradle.kts",
-            # Gradle dependency locking (Gradle 6.8+)
             "gradle.lockfile",
             "buildscript-gradle.lockfile",
-            # Gradle wrapper — records the exact Gradle distribution URL/hash
             "gradle-wrapper.properties",
-            # Maven wrapper
             "maven-wrapper.properties",
         ]
+
+    def parse_lockfile(self, path: Path) -> list[Dependency]:
+        if path.name == "pom.xml":
+            from depaudit.ecosystems.java.parsers.maven import parse
+            return parse(path)
+        if path.name in ("gradle.lockfile", "buildscript-gradle.lockfile"):
+            from depaudit.ecosystems.java.parsers.gradle import parse
+            return parse(path)
+        return []  # build.gradle, settings.gradle, wrapper files: no parseable dep data

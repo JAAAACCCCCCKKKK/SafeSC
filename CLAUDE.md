@@ -13,7 +13,7 @@ This document defines the architectural and development constraints for **depaud
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │  Stage 1: Parse & Normalize   解析为统一依赖模型           │
-│  每个依赖 → {name, version, hash, source_url, direct?}    │
+│  每个依赖 → {name, version, hash, source_url, is_direct, layer_number, parent_url}    │
 └────────────────────┬────────────────────────────────────┘
                      ▼
 ┌─────────────────────────────────────────────────────────┐

@@ -10,6 +10,8 @@ from __future__ import annotations
 import abc
 from pathlib import Path
 
+from depaudit.core.models import Dependency
+
 
 class EcosystemAdapter(abc.ABC):
     """Plug-in contract that every ecosystem adapter must fulfil."""
@@ -50,3 +52,16 @@ class EcosystemAdapter(abc.ABC):
             if path.match(pattern):
                 return True
         return False
+
+    # ------------------------------------------------------------------ #
+    # Stage 1                                                              #
+    # ------------------------------------------------------------------ #
+
+    @abc.abstractmethod
+    def parse_lockfile(self, path: Path) -> list[Dependency]:
+        """Parse the lockfile at *path* and return normalised dependencies.
+
+        Implementations must return an empty list (never raise) for files that
+        carry no parseable dependency data (e.g. ``settings.gradle``,
+        ``pyproject.toml`` without pinned versions).
+        """
