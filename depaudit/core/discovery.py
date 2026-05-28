@@ -35,12 +35,14 @@ from depaudit.ecosystems.python.adapter import PythonAdapter
 from depaudit.ecosystems.javascript.adapter import JavaScriptAdapter
 from depaudit.ecosystems.rust.adapter import RustAdapter
 from depaudit.ecosystems.go.adapter import GoAdapter
+from depaudit.ecosystems.java.adapter import JavaAdapter
 
 _DEFAULT_ADAPTERS: list[EcosystemAdapter] = [
     PythonAdapter(),
     JavaScriptAdapter(),
     RustAdapter(),
     GoAdapter(),
+    JavaAdapter(),
 ]
 
 # Directories that are never interesting and slow down the walk considerably.
