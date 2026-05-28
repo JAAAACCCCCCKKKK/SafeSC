@@ -209,6 +209,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Local dev scripts (not for CI or production)
+scripts/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
