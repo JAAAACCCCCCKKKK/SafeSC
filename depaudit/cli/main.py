@@ -3,6 +3,7 @@
 Stage 0 (discovery) runs by default.
 Pass --json to also run Stage 1 (parse) and emit a JSON dependency array.
 Pass --verify to run Stage 1 + Stage 2 (hash verification) and emit results.
+Pass --signals to run Stage 1 + Stage 3 (cheap signals) and emit signals.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_json = "--json" in args
     run_verify = "--verify" in args
+    run_signals = "--signals" in args
     positional = [a for a in args if not a.startswith("--")]
     root = Path(positional[0]) if positional else Path.cwd()
 
@@ -38,6 +40,15 @@ def main(argv: list[str] | None = None) -> int:
 
         has_critical = any(r.severity.value == "critical" for r in results)
         return 1 if has_critical else 0
+
+    if run_signals:
+        from depaudit.signals.collector import run_collection
+
+        deps = parse_lockfiles(files)
+        signals = run_collection(deps)
+        print(json.dumps([s.to_dict() for s in signals], indent=2))
+        # Stage 3 only emits evidence; CI gating is the scorer's job (later stage).
+        return 0
 
     if output_json:
         deps = parse_lockfiles(files)

@@ -1,11 +1,11 @@
 """Unit tests for Stage 2: hash verification (depaudit.signals.provenance).
 
 All network calls are mocked via unittest.mock — no real HTTP requests.
+Async tests run under pytest-asyncio (asyncio_mode = "auto").
 """
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -76,10 +76,7 @@ class TestNormalizeHash:
 # ---------------------------------------------------------------------------
 
 class TestVerifyOne:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_match(self):
+    async def test_match(self):
         dep = _dep(hash_="sha256:abc123")
         session = _mock_session(None)
 
@@ -90,12 +87,12 @@ class TestVerifyOne:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            result = self._run(_verify_one(dep, session))
+            result = await _verify_one(dep, session)
 
         assert result.status == VerificationStatus.MATCH
         assert result.severity == Severity.INFO
 
-    def test_mismatch(self):
+    async def test_mismatch(self):
         dep = _dep(hash_="sha256:abc123")
         session = _mock_session(None)
 
@@ -106,21 +103,21 @@ class TestVerifyOne:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            result = self._run(_verify_one(dep, session))
+            result = await _verify_one(dep, session)
 
         assert result.status == VerificationStatus.MISMATCH
         assert result.severity == Severity.CRITICAL
         assert "evil999" in result.detail
 
-    def test_missing_lockfile_hash(self):
+    async def test_missing_lockfile_hash(self):
         dep = _dep(hash_=None)
         session = _mock_session(None)
-        result = self._run(_verify_one(dep, session))
+        result = await _verify_one(dep, session)
         assert result.status == VerificationStatus.MISSING_LOCKFILE_HASH
         assert result.severity == Severity.LOW
         assert result.lockfile_hash is None
 
-    def test_registry_unavailable(self):
+    async def test_registry_unavailable(self):
         dep = _dep(hash_="sha256:abc123")
         session = _mock_session(None)
 
@@ -131,12 +128,12 @@ class TestVerifyOne:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            result = self._run(_verify_one(dep, session))
+            result = await _verify_one(dep, session)
 
         assert result.status == VerificationStatus.REGISTRY_UNAVAILABLE
         assert result.severity == Severity.INFO
 
-    def test_case_insensitive_sha256_match(self):
+    async def test_case_insensitive_sha256_match(self):
         dep = _dep(hash_="sha256:ABCDEF")
         session = _mock_session(None)
 
@@ -147,11 +144,11 @@ class TestVerifyOne:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            result = self._run(_verify_one(dep, session))
+            result = await _verify_one(dep, session)
 
         assert result.status == VerificationStatus.MATCH
 
-    def test_result_to_dict_shape(self):
+    async def test_result_to_dict_shape(self):
         dep = _dep(hash_="sha256:abc")
         session = _mock_session(None)
 
@@ -162,7 +159,7 @@ class TestVerifyOne:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            result = self._run(_verify_one(dep, session))
+            result = await _verify_one(dep, session)
 
         d = result.to_dict()
         assert set(d.keys()) == {
@@ -177,10 +174,7 @@ class TestVerifyOne:
 # ---------------------------------------------------------------------------
 
 class TestVerifyAll:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_one_result_per_dep(self):
+    async def test_returns_one_result_per_dep(self):
         deps = [_dep("pkg_a"), _dep("pkg_b"), _dep("pkg_c")]
 
         async def fake_fetch(d, s):
@@ -190,11 +184,11 @@ class TestVerifyAll:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            results = self._run(verify_all(deps))
+            results = await verify_all(deps)
 
         assert len(results) == 3
 
-    def test_order_preserved(self):
+    async def test_order_preserved(self):
         deps = [_dep(f"pkg_{i}", hash_=f"sha256:{i:064x}") for i in range(5)]
 
         async def fake_fetch(d, s):
@@ -204,11 +198,11 @@ class TestVerifyAll:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            results = self._run(verify_all(deps))
+            results = await verify_all(deps)
 
         assert [r.dep.name for r in results] == [d.name for d in deps]
 
-    def test_mixed_statuses(self):
+    async def test_mixed_statuses(self):
         dep_match = _dep("match_pkg", hash_="sha256:aaa")
         dep_miss = _dep("miss_pkg", hash_=None)
         dep_mismatch = _dep("bad_pkg", hash_="sha256:bbb")
@@ -224,15 +218,15 @@ class TestVerifyAll:
             "depaudit.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
-            results = self._run(verify_all([dep_match, dep_miss, dep_mismatch]))
+            results = await verify_all([dep_match, dep_miss, dep_mismatch])
 
         by_name = {r.dep.name: r for r in results}
         assert by_name["match_pkg"].status == VerificationStatus.MATCH
         assert by_name["miss_pkg"].status == VerificationStatus.MISSING_LOCKFILE_HASH
         assert by_name["bad_pkg"].status == VerificationStatus.MISMATCH
 
-    def test_empty_deps_list(self):
-        results = self._run(verify_all([]))
+    async def test_empty_deps_list(self):
+        results = await verify_all([])
         assert results == []
 
 
@@ -241,15 +235,13 @@ class TestVerifyAll:
 # ---------------------------------------------------------------------------
 
 class TestRegistryDispatcher:
-    def test_unsupported_ecosystem_returns_none(self):
+    async def test_unsupported_ecosystem_returns_none(self):
         from depaudit.signals.provenance.registries import get_registry_hash
 
         dep = _dep(ecosystem="unknown_lang")
         session = _mock_session(None)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            get_registry_hash(dep, session)
-        )
+        result = await get_registry_hash(dep, session)
         assert result is None
 
 
@@ -258,10 +250,7 @@ class TestRegistryDispatcher:
 # ---------------------------------------------------------------------------
 
 class TestPyPIRegistry:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_wheel_sha256(self):
+    async def test_returns_wheel_sha256(self):
         from depaudit.signals.provenance.registries import pypi
 
         data = {
@@ -275,19 +264,19 @@ class TestPyPIRegistry:
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(pypi.get_registry_hash(_dep(), session))
+        result = await pypi.get_registry_hash(_dep(), session)
         assert result == "sha256:deadbeef"
 
-    def test_returns_none_on_404(self):
+    async def test_returns_none_on_404(self):
         from depaudit.signals.provenance.registries import pypi
 
         session = MagicMock()
         session.get_json = AsyncMock(return_value=None)
 
-        result = self._run(pypi.get_registry_hash(_dep(), session))
+        result = await pypi.get_registry_hash(_dep(), session)
         assert result is None
 
-    def test_prefers_matching_hash(self):
+    async def test_prefers_matching_hash(self):
         from depaudit.signals.provenance.registries import pypi
 
         dep = _dep(hash_="sha256:matching")
@@ -300,87 +289,78 @@ class TestPyPIRegistry:
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(pypi.get_registry_hash(dep, session))
+        result = await pypi.get_registry_hash(dep, session)
         assert result == "sha256:matching"
 
 
 class TestNpmRegistry:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_integrity(self):
+    async def test_returns_integrity(self):
         from depaudit.signals.provenance.registries import npm
 
         data = {"dist": {"integrity": "sha512-abc123="}}
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(npm.get_registry_hash(_dep(ecosystem="javascript"), session))
+        result = await npm.get_registry_hash(_dep(ecosystem="javascript"), session)
         assert result == "sha512-abc123="
 
-    def test_falls_back_to_shasum(self):
+    async def test_falls_back_to_shasum(self):
         from depaudit.signals.provenance.registries import npm
 
         data = {"dist": {"shasum": "abcdef1234567890abcdef1234567890abcdef12"}}
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(npm.get_registry_hash(_dep(ecosystem="javascript"), session))
+        result = await npm.get_registry_hash(_dep(ecosystem="javascript"), session)
         assert result == "sha1:abcdef1234567890abcdef1234567890abcdef12"
 
-    def test_scoped_package_url_encoding(self):
+    async def test_scoped_package_url_encoding(self):
         from depaudit.signals.provenance.registries import npm
 
         dep = _dep(name="@scope/pkg", ecosystem="javascript")
         session = MagicMock()
         session.get_json = AsyncMock(return_value=None)
 
-        self._run(npm.get_registry_hash(dep, session))
+        await npm.get_registry_hash(dep, session)
         call_url = session.get_json.call_args[0][0]
         assert "%40" in call_url
         assert "%2F" in call_url
 
 
 class TestCratesRegistry:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_checksum(self):
+    async def test_returns_checksum(self):
         from depaudit.signals.provenance.registries import crates
 
         data = {"version": {"checksum": "deadbeefcafe"}}
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(crates.get_registry_hash(_dep(ecosystem="rust"), session))
+        result = await crates.get_registry_hash(_dep(ecosystem="rust"), session)
         assert result == "sha256:deadbeefcafe"
 
-    def test_no_prefix_added_if_already_prefixed(self):
+    async def test_no_prefix_added_if_already_prefixed(self):
         from depaudit.signals.provenance.registries import crates
 
         data = {"version": {"checksum": "sha256:already"}}
         session = MagicMock()
         session.get_json = AsyncMock(return_value=data)
 
-        result = self._run(crates.get_registry_hash(_dep(ecosystem="rust"), session))
+        result = await crates.get_registry_hash(_dep(ecosystem="rust"), session)
         assert result == "sha256:already"
 
 
 class TestGoProxyRegistry:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_h1_hash_from_ziphash(self):
+    async def test_returns_h1_hash_from_ziphash(self):
         from depaudit.signals.provenance.registries import goproxy
 
         session = MagicMock()
         # ziphash returns the hash; sum.golang.org is not called
         session.get_text = AsyncMock(return_value="h1:abcdef123=\n")
 
-        result = self._run(goproxy.get_registry_hash(_dep(ecosystem="go"), session))
+        result = await goproxy.get_registry_hash(_dep(ecosystem="go"), session)
         assert result == "h1:abcdef123="
 
-    def test_falls_back_to_sum_db_when_ziphash_404(self):
+    async def test_falls_back_to_sum_db_when_ziphash_404(self):
         from depaudit.signals.provenance.registries import goproxy
 
         dep = _dep(name="github.com/foo/bar", version="v1.0.0", ecosystem="go")
@@ -395,24 +375,21 @@ class TestGoProxyRegistry:
         # First call (ziphash) returns None; second call (sum.golang.org) returns hash
         session.get_text = AsyncMock(side_effect=[None, sum_response])
 
-        result = self._run(goproxy.get_registry_hash(dep, session))
+        result = await goproxy.get_registry_hash(dep, session)
         assert result == "h1:SomeZipHash="
 
-    def test_none_when_both_endpoints_fail(self):
+    async def test_none_when_both_endpoints_fail(self):
         from depaudit.signals.provenance.registries import goproxy
 
         session = MagicMock()
         session.get_text = AsyncMock(return_value=None)
 
-        result = self._run(goproxy.get_registry_hash(_dep(ecosystem="go"), session))
+        result = await goproxy.get_registry_hash(_dep(ecosystem="go"), session)
         assert result is None
 
 
 class TestMavenRegistry:
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_returns_sha256(self):
+    async def test_returns_sha256(self):
         from depaudit.signals.provenance.registries import maven
 
         dep = Dependency(
@@ -426,10 +403,10 @@ class TestMavenRegistry:
         hex64 = "a" * 64
         session.get_text = AsyncMock(return_value=hex64)
 
-        result = self._run(maven.get_registry_hash(dep, session))
+        result = await maven.get_registry_hash(dep, session)
         assert result == f"sha256:{hex64}"
 
-    def test_falls_back_to_sha1(self):
+    async def test_falls_back_to_sha1(self):
         from depaudit.signals.provenance.registries import maven
 
         dep = Dependency(
@@ -444,10 +421,10 @@ class TestMavenRegistry:
         # sha256 returns None, sha1 returns hex40
         session.get_text = AsyncMock(side_effect=[None, hex40])
 
-        result = self._run(maven.get_registry_hash(dep, session))
+        result = await maven.get_registry_hash(dep, session)
         assert result == f"sha1:{hex40}"
 
-    def test_no_source_url_returns_none(self):
+    async def test_no_source_url_returns_none(self):
         from depaudit.signals.provenance.registries import maven
 
         dep = Dependency(
@@ -460,7 +437,7 @@ class TestMavenRegistry:
         session = MagicMock()
         session.get_text = AsyncMock(return_value="hex")
 
-        result = self._run(maven.get_registry_hash(dep, session))
+        result = await maven.get_registry_hash(dep, session)
         assert result is None
 
 

@@ -1,0 +1,202 @@
+"""Curated lists of widely-used package names per ecosystem.
+
+Used by the typosquat collector to flag near-miss names (Levenshtein distance
+1-2 from a popular package).  Each list holds the ~100 most popular / most
+attractive typosquat targets for its ecosystem — not an exhaustive registry
+mirror.
+
+Names are stored in the SAME format the corresponding lockfile parser emits,
+because the collector compares them against ``Dependency.name`` (after
+case-folding + separator canonicalisation):
+
+* python     -> PyPI project name        ("requests")
+* javascript -> npm package name          ("react", "@scope/pkg")
+* rust       -> crates.io crate name      ("serde_json")
+* go         -> full module path          ("github.com/pkg/errors")
+* java       -> Maven "groupId:artifactId" ("com.google.guava:guava")
+"""
+
+from __future__ import annotations
+
+_PYTHON = {
+    "requests", "urllib3", "numpy", "pandas", "flask", "django", "setuptools",
+    "pip", "wheel", "scipy", "matplotlib", "pytest", "boto3", "botocore",
+    "pyyaml", "cryptography", "click", "jinja2", "werkzeug", "sqlalchemy",
+    "fastapi", "pydantic", "aiohttp", "certifi", "idna", "charset-normalizer",
+    "python-dateutil", "six", "packaging", "typing-extensions", "colorama",
+    "tqdm", "pillow", "scikit-learn", "tensorflow", "torch", "transformers",
+    "beautifulsoup4", "lxml", "openpyxl", "redis", "celery", "gunicorn",
+    "uvicorn", "starlette", "httpx", "rich", "attrs", "markupsafe", "psutil",
+    "s3transfer", "jmespath", "awscli", "google-auth", "protobuf", "grpcio",
+    "cachetools", "pyasn1", "rsa", "oauthlib", "requests-oauthlib", "pyjwt",
+    "cffi", "pycparser", "pynacl", "bcrypt", "paramiko", "websocket-client",
+    "websockets", "anyio", "sniffio", "h11", "httpcore", "frozenlist",
+    "multidict", "yarl", "aiosignal", "greenlet", "alembic", "mako",
+    "itsdangerous", "blinker", "wtforms", "gevent", "tornado", "dnspython",
+    "orjson", "msgpack", "tomli", "python-dotenv", "pyparsing",
+    "more-itertools", "sortedcontainers", "wrapt", "importlib-metadata",
+    "platformdirs", "filelock", "virtualenv", "mypy", "flake8",
+}
+
+_JAVASCRIPT = {
+    "react", "react-dom", "lodash", "express", "axios", "chalk", "commander",
+    "webpack", "eslint", "prettier", "typescript", "jest", "mocha", "vue",
+    "angular", "next", "moment", "dayjs", "uuid", "dotenv", "cors",
+    "body-parser", "mongoose", "redux", "rxjs", "socket.io", "ws", "yargs",
+    "inquirer", "semver", "glob", "rimraf", "fs-extra", "node-fetch", "debug",
+    "minimist", "request", "bluebird", "async", "underscore", "jquery",
+    "bootstrap", "tailwindcss", "vite", "rollup", "esbuild", "nodemon", "pm2",
+    "classnames", "react-router", "react-router-dom", "redux-thunk",
+    "react-redux", "styled-components", "webpack-cli", "ts-node",
+    "babel-loader", "css-loader", "style-loader", "html-webpack-plugin",
+    "postcss", "autoprefixer", "sass", "less", "jsonwebtoken", "bcryptjs",
+    "passport", "helmet", "morgan", "multer", "nodemailer", "cookie-parser",
+    "express-session", "joi", "ajv", "yup", "zod", "winston", "pino", "ramda",
+    "immutable", "vuex", "vue-router", "date-fns", "luxon", "qs",
+    "query-string", "ora", "validator", "cheerio", "cross-env", "concurrently",
+    "husky", "lint-staged", "npm-run-all", "chokidar", "globby", "execa",
+    "eslint-config-airbnb", "babel-eslint",
+}
+
+# Rust: crate names as published on crates.io (lowercase, hyphen/underscore).
+_RUST = {
+    "serde", "serde_json", "serde_derive", "tokio", "syn", "quote",
+    "proc-macro2", "libc", "rand", "regex", "regex-syntax", "log", "anyhow",
+    "thiserror", "futures", "bytes", "clap", "chrono", "uuid", "base64",
+    "lazy_static", "once_cell", "itertools", "num-traits", "cfg-if",
+    "bitflags", "parking_lot", "hashbrown", "indexmap", "smallvec", "hyper",
+    "reqwest", "async-trait", "tracing", "tracing-subscriber", "rayon",
+    "crossbeam", "unicode-ident", "getrandom", "aho-corasick", "memchr",
+    "ryu", "toml", "semver", "url", "mio", "socket2", "time", "derive_more",
+    "tower", "axum", "futures-core", "futures-util", "futures-channel",
+    "pin-project", "pin-project-lite", "slab", "tokio-util", "tokio-stream",
+    "h2", "http", "http-body", "httparse", "tower-http", "hyper-tls",
+    "native-tls", "openssl", "rustls", "webpki", "ring", "sha2", "sha1",
+    "digest", "hmac", "md-5", "generic-array", "block-buffer", "crypto-common",
+    "rand_core", "rand_chacha", "num-integer", "num-bigint", "num-complex",
+    "num-rational", "either", "scopeguard", "fnv", "ahash", "dashmap",
+    "arc-swap", "env_logger", "clap_derive", "structopt", "dirs", "walkdir",
+    "tempfile", "flate2", "zip", "csv", "serde_yaml",
+}
+
+# Go: full module paths, exactly as they appear in go.mod / go.sum.
+_GO = {
+    "github.com/stretchr/testify", "github.com/pkg/errors",
+    "github.com/sirupsen/logrus", "github.com/spf13/cobra",
+    "github.com/spf13/viper", "github.com/spf13/pflag",
+    "github.com/gin-gonic/gin", "github.com/gorilla/mux",
+    "github.com/gorilla/websocket", "github.com/google/uuid",
+    "github.com/google/go-cmp", "github.com/golang/protobuf",
+    "google.golang.org/protobuf", "google.golang.org/grpc",
+    "golang.org/x/crypto", "golang.org/x/net", "golang.org/x/sys",
+    "golang.org/x/text", "golang.org/x/sync", "golang.org/x/time",
+    "github.com/prometheus/client_golang", "github.com/json-iterator/go",
+    "gopkg.in/yaml.v3", "gopkg.in/yaml.v2", "github.com/go-sql-driver/mysql",
+    "github.com/lib/pq", "gorm.io/gorm", "github.com/labstack/echo",
+    "github.com/mattn/go-sqlite3", "github.com/davecgh/go-spew",
+    "github.com/fsnotify/fsnotify", "go.uber.org/zap",
+    "github.com/aws/aws-sdk-go", "github.com/cenkalti/backoff",
+    "github.com/golang-jwt/jwt", "github.com/mitchellh/mapstructure",
+    "github.com/hashicorp/go-multierror", "github.com/spf13/afero",
+    "github.com/pmezard/go-difflib", "github.com/modern-go/reflect2",
+    "github.com/modern-go/concurrent", "golang.org/x/oauth2",
+    "golang.org/x/term", "golang.org/x/mod", "golang.org/x/tools",
+    "github.com/golang/mock", "github.com/golang/glog",
+    "github.com/golang/groupcache", "github.com/google/wire",
+    "github.com/google/gops", "go.uber.org/multierr", "go.uber.org/atomic",
+    "github.com/hashicorp/go-hclog", "github.com/hashicorp/go-retryablehttp",
+    "github.com/hashicorp/golang-lru", "github.com/hashicorp/go-version",
+    "github.com/hashicorp/go-uuid", "github.com/hashicorp/consul",
+    "github.com/hashicorp/vault", "github.com/prometheus/client_model",
+    "github.com/prometheus/common", "github.com/prometheus/procfs",
+    "github.com/beorn7/perks", "github.com/cespare/xxhash",
+    "github.com/cespare/xxhash/v2", "github.com/grpc-ecosystem/grpc-gateway",
+    "github.com/grpc-ecosystem/go-grpc-middleware", "github.com/golang/snappy",
+    "github.com/klauspost/compress", "github.com/mattn/go-isatty",
+    "github.com/mattn/go-colorable", "github.com/fatih/color",
+    "github.com/olekukonko/tablewriter", "github.com/spf13/cast",
+    "github.com/subosito/gotenv", "github.com/magiconair/properties",
+    "github.com/mitchellh/go-homedir", "github.com/mitchellh/copystructure",
+    "github.com/mitchellh/reflectwalk", "github.com/go-redis/redis",
+    "github.com/redis/go-redis", "github.com/jmoiron/sqlx",
+    "github.com/jackc/pgx", "github.com/Masterminds/squirrel",
+    "github.com/golang-migrate/migrate", "github.com/jinzhu/now",
+    "github.com/jinzhu/inflection", "gorm.io/driver/mysql",
+    "github.com/gin-contrib/cors", "github.com/gin-contrib/sse",
+    "github.com/ugorji/go", "github.com/go-playground/validator",
+    "github.com/go-playground/universal-translator",
+    "github.com/leodido/go-urn", "github.com/dgrijalva/jwt-go",
+    "github.com/google/btree", "github.com/rogpeppe/go-internal",
+    "github.com/uber-go/zap", "github.com/Masterminds/semver",
+    "github.com/stretchr/objx",
+}
+
+# Java/Kotlin: Maven coordinates in "groupId:artifactId" form.
+_JAVA = {
+    "com.google.guava:guava", "org.apache.commons:commons-lang3",
+    "commons-io:commons-io", "com.fasterxml.jackson.core:jackson-databind",
+    "com.fasterxml.jackson.core:jackson-core",
+    "com.fasterxml.jackson.core:jackson-annotations", "org.slf4j:slf4j-api",
+    "ch.qos.logback:logback-classic", "org.apache.logging.log4j:log4j-core",
+    "org.apache.logging.log4j:log4j-api", "junit:junit",
+    "org.junit.jupiter:junit-jupiter", "org.junit.jupiter:junit-jupiter-api",
+    "org.junit.jupiter:junit-jupiter-engine", "org.mockito:mockito-core",
+    "org.assertj:assertj-core", "org.springframework:spring-core",
+    "org.springframework:spring-context", "org.springframework:spring-web",
+    "org.springframework:spring-beans", "org.springframework:spring-webmvc",
+    "org.springframework:spring-tx", "org.springframework:spring-jdbc",
+    "org.springframework:spring-test", "org.springframework.boot:spring-boot",
+    "org.springframework.boot:spring-boot-starter",
+    "org.springframework.boot:spring-boot-starter-web",
+    "org.springframework.boot:spring-boot-starter-test",
+    "org.springframework.boot:spring-boot-autoconfigure",
+    "org.springframework.boot:spring-boot-starter-data-jpa",
+    "com.google.code.gson:gson", "org.projectlombok:lombok",
+    "org.apache.httpcomponents:httpclient",
+    "org.apache.httpcomponents:httpcore", "com.squareup.okhttp3:okhttp",
+    "com.squareup.okhttp3:logging-interceptor",
+    "com.squareup.retrofit2:retrofit",
+    "com.squareup.retrofit2:converter-gson", "org.hibernate:hibernate-core",
+    "org.hibernate.validator:hibernate-validator",
+    "mysql:mysql-connector-java", "org.postgresql:postgresql",
+    "com.h2database:h2", "io.netty:netty-all",
+    "org.apache.commons:commons-collections4", "commons-codec:commons-codec",
+    "org.yaml:snakeyaml", "com.google.protobuf:protobuf-java",
+    "org.apache.kafka:kafka-clients", "redis.clients:jedis",
+    "org.testng:testng", "commons-logging:commons-logging",
+    "commons-lang:commons-lang", "commons-collections:commons-collections",
+    "commons-beanutils:commons-beanutils", "org.apache.commons:commons-text",
+    "org.apache.commons:commons-math3", "org.apache.commons:commons-pool2",
+    "org.apache.commons:commons-compress",
+    "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml",
+    "com.fasterxml.jackson.datatype:jackson-datatype-jsr310",
+    "javax.servlet:javax.servlet-api", "jakarta.servlet:jakarta.servlet-api",
+    "javax.validation:validation-api",
+    "jakarta.validation:jakarta.validation-api",
+    "javax.annotation:javax.annotation-api", "com.google.inject:guice",
+    "com.google.dagger:dagger", "io.reactivex.rxjava2:rxjava",
+    "io.reactivex.rxjava3:rxjava", "org.apache.maven:maven-plugin-api",
+    "org.apache.maven.plugins:maven-compiler-plugin",
+    "org.apache.maven.plugins:maven-surefire-plugin",
+    "org.apache.logging.log4j:log4j-slf4j-impl", "org.slf4j:slf4j-simple",
+    "org.slf4j:jcl-over-slf4j", "com.zaxxer:HikariCP", "org.mybatis:mybatis",
+    "org.mybatis.spring.boot:mybatis-spring-boot-starter",
+    "org.flywaydb:flyway-core", "io.springfox:springfox-swagger2",
+    "org.springdoc:springdoc-openapi-ui", "io.jsonwebtoken:jjwt-api",
+    "io.jsonwebtoken:jjwt-impl", "com.auth0:java-jwt",
+    "org.modelmapper:modelmapper", "org.mapstruct:mapstruct",
+    "com.google.code.findbugs:jsr305", "org.checkerframework:checker-qual",
+    "com.googlecode.json-simple:json-simple", "org.json:json",
+    "joda-time:joda-time", "org.apache.poi:poi", "org.apache.poi:poi-ooxml",
+    "com.opencsv:opencsv", "org.jsoup:jsoup",
+    "org.seleniumhq.selenium:selenium-java", "io.rest-assured:rest-assured",
+    "org.awaitility:awaitility", "net.bytebuddy:byte-buddy",
+}
+
+POPULAR_BY_ECOSYSTEM: dict[str, frozenset[str]] = {
+    "python": frozenset(_PYTHON),
+    "javascript": frozenset(_JAVASCRIPT),
+    "rust": frozenset(_RUST),
+    "go": frozenset(_GO),
+    "java": frozenset(_JAVA),
+}

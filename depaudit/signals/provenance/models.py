@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+# Severity is the shared, canonical tier enum (defined once in signals.models).
+# Re-exported here so existing Stage 2 imports keep working.
+from depaudit.signals.models import Severity
+
 if TYPE_CHECKING:
     from depaudit.core.models import Dependency
 
@@ -16,14 +20,6 @@ class VerificationStatus(str, Enum):
     MISSING_LOCKFILE_HASH = "missing_lockfile_hash"
     REGISTRY_UNAVAILABLE = "registry_unavailable"
     UNSUPPORTED_ECOSYSTEM = "unsupported_ecosystem"
-
-
-class Severity(str, Enum):
-    INFO = "info"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
 
 
 _STATUS_SEVERITY: dict[VerificationStatus, Severity] = {
