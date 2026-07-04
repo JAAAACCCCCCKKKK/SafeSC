@@ -14,9 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from depaudit.core.models import Dependency
-from depaudit.core.normalizer import parse_lockfiles
-from depaudit.core.discovery import discover
+from tools.index.core.normalizer import parse_lockfiles
+from tools.index import discover
 
 
 # ── shared helper ─────────────────────────────────────────────────────────────
@@ -63,7 +62,7 @@ sdist = { url = "https://files.pythonhosted.org/certifi-2024.2.2.tar.gz", hash =
 class TestUvParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.uv import parse
+        from tools.index.ecosystems.python.parsers.uv import parse
         return parse(write(tmp_path / "uv.lock", _UV_LOCK))
 
     def test_direct_dep_is_direct(self, deps):
@@ -94,11 +93,11 @@ class TestUvParser:
         assert all(d.ecosystem == "python" for d in deps)
 
     def test_malformed_toml_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.uv import parse
+        from tools.index.ecosystems.python.parsers.uv import parse
         assert parse(write(tmp_path / "uv.lock", "not valid toml ][")) == []
 
     def test_empty_file_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.uv import parse
+        from tools.index.ecosystems.python.parsers.uv import parse
         assert parse(write(tmp_path / "uv.lock", "")) == []
 
 
@@ -149,7 +148,7 @@ requests = "^2.28.0"
 class TestPoetryParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.poetry import parse
+        from tools.index.ecosystems.python.parsers.poetry import parse
         write(tmp_path / "poetry.lock", _POETRY_LOCK)
         write(tmp_path / "pyproject.toml", _PYPROJECT_WITH_REQUESTS)
         return parse(tmp_path / "poetry.lock")
@@ -170,13 +169,13 @@ class TestPoetryParser:
         assert req.hash == "sha256:wheel_hash"
 
     def test_no_pyproject_all_unknown_direct(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.poetry import parse
+        from tools.index.ecosystems.python.parsers.poetry import parse
         write(tmp_path / "poetry.lock", _POETRY_LOCK)
         deps = parse(tmp_path / "poetry.lock")
         assert all(d.is_direct is False for d in deps)
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.poetry import parse
+        from tools.index.ecosystems.python.parsers.poetry import parse
         assert parse(write(tmp_path / "poetry.lock", "[[bad toml")) == []
 
 
@@ -184,7 +183,7 @@ class TestPoetryParser:
 
 class TestRequirementsParser:
     def _parse(self, tmp_path, content):
-        from depaudit.ecosystems.python.parsers.requirements import parse
+        from tools.index.ecosystems.python.parsers.requirements import parse
         return parse(write(tmp_path / "requirements.txt", content))
 
     def test_pinned_version(self, tmp_path):
@@ -227,7 +226,7 @@ class TestRequirementsParser:
 
 class TestPipfileParser:
     def _parse(self, tmp_path, data: dict):
-        from depaudit.ecosystems.python.parsers.pipfile import parse
+        from tools.index.ecosystems.python.parsers.pipfile import parse
         path = tmp_path / "Pipfile.lock"
         path.write_text(json.dumps(data), encoding="utf-8")
         return parse(path)
@@ -258,7 +257,7 @@ class TestPipfileParser:
         assert deps[0].layer_number == 1
 
     def test_malformed_json_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.python.parsers.pipfile import parse
+        from tools.index.ecosystems.python.parsers.pipfile import parse
         assert parse(write(tmp_path / "Pipfile.lock", "{bad json")) == []
 
 
@@ -276,7 +275,7 @@ def _pkg_lock_v3(direct: dict, packages: dict) -> dict:
 
 class TestPackageLockParser:
     def test_v3_direct_dep(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.package_lock import parse
+        from tools.index.ecosystems.javascript.parsers.package_lock import parse
         data = _pkg_lock_v3(
             {"express": "^4.18.2"},
             {"express": {"version": "4.18.2", "resolved": "https://r.npm/express.tgz", "integrity": "sha512-abc"}},
@@ -289,7 +288,7 @@ class TestPackageLockParser:
         assert exp.source_url == "https://r.npm/express.tgz"
 
     def test_v3_transitive_dep_layer_and_parent(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.package_lock import parse
+        from tools.index.ecosystems.javascript.parsers.package_lock import parse
         data = _pkg_lock_v3(
             {"express": "^4.18.2"},
             {
@@ -304,7 +303,7 @@ class TestPackageLockParser:
         assert acc.parent_name == "express"
 
     def test_v1_nested_deps(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.package_lock import parse
+        from tools.index.ecosystems.javascript.parsers.package_lock import parse
         data = {
             "lockfileVersion": 1,
             "dependencies": {
@@ -324,7 +323,7 @@ class TestPackageLockParser:
         assert any(d.name == "accepts" for d in deps)
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.package_lock import parse
+        from tools.index.ecosystems.javascript.parsers.package_lock import parse
         assert parse(write(tmp_path / "package-lock.json", "{bad")) == []
 
 
@@ -349,7 +348,7 @@ _PACKAGE_JSON_EXPRESS = json.dumps({"dependencies": {"express": "^4.18.2"}})
 
 class TestYarnParser:
     def test_parses_name_version_integrity(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.yarn import parse
+        from tools.index.ecosystems.javascript.parsers.yarn import parse
         write(tmp_path / "yarn.lock", _YARN_LOCK)
         deps = parse(tmp_path / "yarn.lock")
         exp = next(d for d in deps if d.name == "express")
@@ -357,14 +356,14 @@ class TestYarnParser:
         assert exp.hash == "sha512-expressIntegrity"
 
     def test_resolved_url_hash_stripped(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.yarn import parse
+        from tools.index.ecosystems.javascript.parsers.yarn import parse
         write(tmp_path / "yarn.lock", _YARN_LOCK)
         deps = parse(tmp_path / "yarn.lock")
         exp = next(d for d in deps if d.name == "express")
         assert exp.source_url == "https://registry.yarnpkg.com/express/-/express-4.18.2.tgz"
 
     def test_direct_via_package_json(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.yarn import parse
+        from tools.index.ecosystems.javascript.parsers.yarn import parse
         write(tmp_path / "yarn.lock", _YARN_LOCK)
         write(tmp_path / "package.json", _PACKAGE_JSON_EXPRESS)
         deps = parse(tmp_path / "yarn.lock")
@@ -374,12 +373,12 @@ class TestYarnParser:
         assert acc.is_direct is False
 
     def test_berry_format_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.yarn import parse
+        from tools.index.ecosystems.javascript.parsers.yarn import parse
         berry = "__metadata:\n  version: 6\n"
         assert parse(write(tmp_path / "yarn.lock", berry)) == []
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.yarn import parse
+        from tools.index.ecosystems.javascript.parsers.yarn import parse
         assert parse(write(tmp_path / "yarn.lock", "")) == []
 
 
@@ -422,7 +421,7 @@ packages:
 
 class TestPnpmParser:
     def test_v6_direct_dep(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.pnpm import parse
+        from tools.index.ecosystems.javascript.parsers.pnpm import parse
         deps = parse(write(tmp_path / "pnpm-lock.yaml", _PNPM_V6))
         exp = next(d for d in deps if d.name == "express")
         assert exp.is_direct is True
@@ -430,20 +429,20 @@ class TestPnpmParser:
         assert exp.hash == "sha512-expressHash"
 
     def test_v6_transitive_dep(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.pnpm import parse
+        from tools.index.ecosystems.javascript.parsers.pnpm import parse
         deps = parse(write(tmp_path / "pnpm-lock.yaml", _PNPM_V6))
         acc = next(d for d in deps if d.name == "accepts")
         assert acc.is_direct is False
 
     def test_v9_direct_from_importers(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.pnpm import parse
+        from tools.index.ecosystems.javascript.parsers.pnpm import parse
         deps = parse(write(tmp_path / "pnpm-lock.yaml", _PNPM_V9))
         lod = next(d for d in deps if d.name == "lodash")
         assert lod.is_direct is True
         assert lod.version == "4.17.21"
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.javascript.parsers.pnpm import parse
+        from tools.index.ecosystems.javascript.parsers.pnpm import parse
         assert parse(write(tmp_path / "pnpm-lock.yaml", "not: valid: yaml: ][")) == []
 
 
@@ -486,7 +485,7 @@ checksum = "aabbcc9900"
 class TestCargoParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.rust.parsers.cargo import parse
+        from tools.index.ecosystems.rust.parsers.cargo import parse
         return parse(write(tmp_path / "Cargo.lock", _CARGO_LOCK))
 
     def test_workspace_root_excluded(self, deps):
@@ -515,7 +514,7 @@ class TestCargoParser:
         assert all(d.ecosystem == "rust" for d in deps)
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.rust.parsers.cargo import parse
+        from tools.index.ecosystems.rust.parsers.cargo import parse
         assert parse(write(tmp_path / "Cargo.lock", "not toml ][")) == []
 
 
@@ -541,7 +540,7 @@ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINE
 class TestGoModParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.go.parsers.gomod import parse
+        from tools.index.ecosystems import parse
         write(tmp_path / "go.mod", _GO_MOD)
         write(tmp_path / "go.sum", _GO_SUM)
         return parse(tmp_path / "go.mod")
@@ -569,20 +568,20 @@ class TestGoModParser:
         assert errors.source_url == "https://proxy.golang.org/github.com/pkg/errors/@v/v0.9.1.zip"
 
     def test_gosum_defers_when_gomod_present(self, tmp_path):
-        from depaudit.ecosystems.go.parsers.gomod import parse
+        from tools.index.ecosystems import parse
         write(tmp_path / "go.mod", _GO_MOD)
         write(tmp_path / "go.sum", _GO_SUM)
         assert parse(tmp_path / "go.sum") == []
 
     def test_gosum_standalone_when_no_gomod(self, tmp_path):
-        from depaudit.ecosystems.go.parsers.gomod import parse
+        from tools.index.ecosystems import parse
         write(tmp_path / "go.sum", _GO_SUM)
         deps = parse(tmp_path / "go.sum")
         assert len(deps) == 1  # only the h1: line, not the /go.mod line
         assert deps[0].layer_number == 2
 
     def test_malformed_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.go.parsers.gomod import parse
+        from tools.index.ecosystems import parse
         assert parse(write(tmp_path / "go.mod", "")) == []
 
 
@@ -613,7 +612,7 @@ _POM_XML = """\
 class TestMavenParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.java.parsers.maven import parse
+        from tools.index.ecosystems.java.parsers.maven import parse
         return parse(write(tmp_path / "pom.xml", _POM_XML))
 
     def test_name_is_group_colon_artifact(self, deps):
@@ -644,7 +643,7 @@ class TestMavenParser:
         assert all(d.is_direct is True for d in deps)
 
     def test_malformed_xml_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.java.parsers.maven import parse
+        from tools.index.ecosystems.java.parsers.maven import parse
         assert parse(write(tmp_path / "pom.xml", "<unclosed>")) == []
 
 
@@ -662,7 +661,7 @@ empty=
 class TestGradleParser:
     @pytest.fixture
     def deps(self, tmp_path):
-        from depaudit.ecosystems.java.parsers.gradle import parse
+        from tools.index.ecosystems.java.parsers.gradle import parse
         return parse(write(tmp_path / "gradle.lockfile", _GRADLE_LOCKFILE))
 
     def test_parses_coord(self, deps):
@@ -682,11 +681,11 @@ class TestGradleParser:
         assert all(d.is_direct is False for d in deps)
 
     def test_non_lockfile_name_returns_empty(self, tmp_path):
-        from depaudit.ecosystems.java.parsers.gradle import parse
+        from tools.index.ecosystems.java.parsers.gradle import parse
         assert parse(write(tmp_path / "build.gradle", "")) == []
 
     def test_malformed_lines_skipped(self, tmp_path):
-        from depaudit.ecosystems.java.parsers.gradle import parse
+        from tools.index.ecosystems.java.parsers.gradle import parse
         content = "group:artifact=config\nno-equals-sign\nvalid:group:1.0=cfg\n"
         deps = parse(write(tmp_path / "gradle.lockfile", content))
         assert len(deps) == 1

@@ -51,7 +51,10 @@ jobs:
           PY
 
       - name: Discovery smoke test
-        run: python -m depaudit.core.discovery smoke-fixture
+        run: python -m tools.index.core.discovery smoke-fixture
 
-      - name: JSON output smoke test
-        run: depaudit --json smoke-fixture
+      - name: Index JSON output smoke test
+        run: index --json smoke-fixture
+
+      - name: Scan signals smoke test
+        run: scan signals smoke-fixture

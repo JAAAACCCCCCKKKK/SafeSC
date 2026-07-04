@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from depaudit.core.discovery import discover
-from depaudit.ecosystems.java.adapter import JavaAdapter
+from tools.index import discover
+from tools.index.ecosystems.java.adapter import JavaAdapter
 
 
 # ── Adapter unit tests ─────────────────────────────────────────────────────────

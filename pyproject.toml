@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "depaudit"
+name = "safesc"
 version = "0.1.0"
-description = "Dependency provenance and trust-auditing tool for CI pipelines"
+description = "SafeSC — supply-chain trust auditing tools (index + scan) for CI pipelines"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -18,10 +18,11 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-depaudit = "depaudit.cli.main:main"
+index = "tools.index.cli.main:main"
+scan = "tools.scan.cli.main:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
 [tool.hatch.build.targets.wheel]
-packages = ["depaudit"]
+packages = ["tools"]

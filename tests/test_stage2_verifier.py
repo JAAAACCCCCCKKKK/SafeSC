@@ -9,15 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-from depaudit.core.models import Dependency
-from depaudit.signals.provenance.models import (
+from tools.index import Dependency
+from tools.scan.signals.provenance.models import (
     HashVerificationResult,
     Severity,
     VerificationStatus,
 )
-from depaudit.signals.provenance.verifier import _normalize_hash, _verify_one, verify_all
+from tools.scan.signals.provenance.verifier import _normalize_hash, _verify_one, verify_all
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +82,7 @@ class TestVerifyOne:
             return "sha256:abc123"
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             result = await _verify_one(dep, session)
@@ -100,7 +98,7 @@ class TestVerifyOne:
             return "sha256:evil999"
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             result = await _verify_one(dep, session)
@@ -125,7 +123,7 @@ class TestVerifyOne:
             return None
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             result = await _verify_one(dep, session)
@@ -141,7 +139,7 @@ class TestVerifyOne:
             return "sha256:abcdef"
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             result = await _verify_one(dep, session)
@@ -156,7 +154,7 @@ class TestVerifyOne:
             return "sha256:abc"
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             result = await _verify_one(dep, session)
@@ -181,7 +179,7 @@ class TestVerifyAll:
             return d.hash
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             results = await verify_all(deps)
@@ -195,7 +193,7 @@ class TestVerifyAll:
             return d.hash
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             results = await verify_all(deps)
@@ -215,7 +213,7 @@ class TestVerifyAll:
             return None
 
         with patch(
-            "depaudit.signals.provenance.verifier._fetch_registry_hash",
+            "tools.scan.signals.provenance.verifier._fetch_registry_hash",
             side_effect=fake_fetch,
         ):
             results = await verify_all([dep_match, dep_miss, dep_mismatch])
@@ -236,7 +234,7 @@ class TestVerifyAll:
 
 class TestRegistryDispatcher:
     async def test_unsupported_ecosystem_returns_none(self):
-        from depaudit.signals.provenance.registries import get_registry_hash
+        from tools.scan import get_registry_hash
 
         dep = _dep(ecosystem="unknown_lang")
         session = _mock_session(None)
@@ -251,7 +249,7 @@ class TestRegistryDispatcher:
 
 class TestPyPIRegistry:
     async def test_returns_wheel_sha256(self):
-        from depaudit.signals.provenance.registries import pypi
+        from tools.scan.signals.provenance.registries import pypi
 
         data = {
             "urls": [
@@ -268,7 +266,7 @@ class TestPyPIRegistry:
         assert result == "sha256:deadbeef"
 
     async def test_returns_none_on_404(self):
-        from depaudit.signals.provenance.registries import pypi
+        from tools.scan.signals.provenance.registries import pypi
 
         session = MagicMock()
         session.get_json = AsyncMock(return_value=None)
@@ -277,7 +275,7 @@ class TestPyPIRegistry:
         assert result is None
 
     async def test_prefers_matching_hash(self):
-        from depaudit.signals.provenance.registries import pypi
+        from tools.scan.signals.provenance.registries import pypi
 
         dep = _dep(hash_="sha256:matching")
         data = {
@@ -295,7 +293,7 @@ class TestPyPIRegistry:
 
 class TestNpmRegistry:
     async def test_returns_integrity(self):
-        from depaudit.signals.provenance.registries import npm
+        from tools.scan.signals.provenance.registries import npm
 
         data = {"dist": {"integrity": "sha512-abc123="}}
         session = MagicMock()
@@ -305,7 +303,7 @@ class TestNpmRegistry:
         assert result == "sha512-abc123="
 
     async def test_falls_back_to_shasum(self):
-        from depaudit.signals.provenance.registries import npm
+        from tools.scan.signals.provenance.registries import npm
 
         data = {"dist": {"shasum": "abcdef1234567890abcdef1234567890abcdef12"}}
         session = MagicMock()
@@ -315,7 +313,7 @@ class TestNpmRegistry:
         assert result == "sha1:abcdef1234567890abcdef1234567890abcdef12"
 
     async def test_scoped_package_url_encoding(self):
-        from depaudit.signals.provenance.registries import npm
+        from tools.scan.signals.provenance.registries import npm
 
         dep = _dep(name="@scope/pkg", ecosystem="javascript")
         session = MagicMock()
@@ -329,7 +327,7 @@ class TestNpmRegistry:
 
 class TestCratesRegistry:
     async def test_returns_checksum(self):
-        from depaudit.signals.provenance.registries import crates
+        from tools.scan.signals.provenance.registries import crates
 
         data = {"version": {"checksum": "deadbeefcafe"}}
         session = MagicMock()
@@ -339,7 +337,7 @@ class TestCratesRegistry:
         assert result == "sha256:deadbeefcafe"
 
     async def test_no_prefix_added_if_already_prefixed(self):
-        from depaudit.signals.provenance.registries import crates
+        from tools.scan.signals.provenance.registries import crates
 
         data = {"version": {"checksum": "sha256:already"}}
         session = MagicMock()
@@ -351,7 +349,7 @@ class TestCratesRegistry:
 
 class TestGoProxyRegistry:
     async def test_returns_h1_hash_from_ziphash(self):
-        from depaudit.signals.provenance.registries import goproxy
+        from tools.scan.signals.provenance.registries import goproxy
 
         session = MagicMock()
         # ziphash returns the hash; sum.golang.org is not called
@@ -361,7 +359,7 @@ class TestGoProxyRegistry:
         assert result == "h1:abcdef123="
 
     async def test_falls_back_to_sum_db_when_ziphash_404(self):
-        from depaudit.signals.provenance.registries import goproxy
+        from tools.scan.signals.provenance.registries import goproxy
 
         dep = _dep(name="github.com/foo/bar", version="v1.0.0", ecosystem="go")
         # sum.golang.org response: tree-size line, then module+version+hash lines
@@ -379,7 +377,7 @@ class TestGoProxyRegistry:
         assert result == "h1:SomeZipHash="
 
     async def test_none_when_both_endpoints_fail(self):
-        from depaudit.signals.provenance.registries import goproxy
+        from tools.scan.signals.provenance.registries import goproxy
 
         session = MagicMock()
         session.get_text = AsyncMock(return_value=None)
@@ -390,7 +388,7 @@ class TestGoProxyRegistry:
 
 class TestMavenRegistry:
     async def test_returns_sha256(self):
-        from depaudit.signals.provenance.registries import maven
+        from tools.scan.signals.provenance.registries import maven
 
         dep = Dependency(
             name="org.example:lib",
@@ -407,7 +405,7 @@ class TestMavenRegistry:
         assert result == f"sha256:{hex64}"
 
     async def test_falls_back_to_sha1(self):
-        from depaudit.signals.provenance.registries import maven
+        from tools.scan.signals.provenance.registries import maven
 
         dep = Dependency(
             name="org.example:lib",
@@ -425,7 +423,7 @@ class TestMavenRegistry:
         assert result == f"sha1:{hex40}"
 
     async def test_no_source_url_returns_none(self):
-        from depaudit.signals.provenance.registries import maven
+        from tools.scan.signals.provenance.registries import maven
 
         dep = Dependency(
             name="org.example:lib",

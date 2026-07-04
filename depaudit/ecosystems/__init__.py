@@ -1,1 +1,0 @@
-"""Ecosystem adapter plug-ins."""

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from depaudit.core.discovery import discover, DiscoveredFile
+from tools.index import discover
 
 
 def make_tree(root: Path, files: list[str]) -> None:

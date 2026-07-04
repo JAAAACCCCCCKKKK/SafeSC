@@ -35,10 +35,10 @@ jobs:
         run: python -m pip check
 
       - name: Compile project sources
-        run: python -m compileall depaudit
+        run: python -m compileall tools
 
       - name: Discover lockfiles in repository
-        run: python -m depaudit.core.discovery .
+        run: python -m tools.index.core.discovery .
 
       - name: Build sdist and wheel
         run: python -m build

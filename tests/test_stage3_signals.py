@@ -11,28 +11,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from depaudit.core.models import Dependency
-from depaudit.signals.base import SignalCollector
-from depaudit.signals.collector import collect_all, default_collectors
-from depaudit.signals.identity.repo_url import RepoUrlCollector
-from depaudit.signals.identity.typosquat import (
+from tools.index import Dependency
+from tools.scan.signals.base import SignalCollector
+from tools.scan.signals.collector import collect_all, default_collectors
+from tools.scan.signals.identity.repo_url import RepoUrlCollector
+from tools.scan.signals.identity.typosquat import (
     TyposquatCollector,
     bounded_levenshtein,
 )
-from depaudit.signals.models import (
+from tools.scan.signals.models import (
     Dimension,
     Severity,
     Signal,
     Spoofability,
     max_severity,
 )
-from depaudit.signals.registry_meta import (
+from tools.scan.signals.registry_meta import (
     RegistryMetadata,
     _normalise_repo_url,
     get_package_metadata,
     get_registry_metadata,
 )
-from depaudit.signals.vulnerability.osv import OsvCollector, _severity_for_vuln
+from tools.scan.signals.vulnerability.osv import OsvCollector, _severity_for_vuln
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ class TestSignalModel:
 
     def test_severity_reexported_in_provenance(self):
         # Stage 2 must keep importing the same Severity object.
-        from depaudit.signals.provenance.models import Severity as ProvSeverity
+        from tools.scan.signals.provenance.models import Severity as ProvSeverity
 
         assert ProvSeverity is Severity
 
@@ -207,7 +207,7 @@ class TestTyposquatCollector:
 
 class TestPopularPackages:
     def test_covers_all_default_ecosystems(self):
-        from depaudit.signals.identity.popular_packages import POPULAR_BY_ECOSYSTEM
+        from tools.scan.signals.identity.popular_packages import POPULAR_BY_ECOSYSTEM
 
         # Must match the ecosystem names produced by the adapters.
         assert set(POPULAR_BY_ECOSYSTEM) == {
@@ -215,7 +215,7 @@ class TestPopularPackages:
         }
 
     def test_each_list_has_at_least_100(self):
-        from depaudit.signals.identity.popular_packages import POPULAR_BY_ECOSYSTEM
+        from tools.scan.signals.identity.popular_packages import POPULAR_BY_ECOSYSTEM
 
         assert all(len(names) >= 100 for names in POPULAR_BY_ECOSYSTEM.values())
 
@@ -246,7 +246,7 @@ class TestNormaliseRepoUrl:
 
 class TestRegistryMetadata:
     async def test_pypi_prefers_source_key(self):
-        from depaudit.signals.registry_meta import _pypi_metadata
+        from tools.scan.signals.registry_meta import _pypi_metadata
 
         data = {"info": {"project_urls": {"Source": "https://github.com/psf/requests"}}}
         session = MagicMock()
@@ -256,7 +256,7 @@ class TestRegistryMetadata:
         assert meta.repo_url == "https://github.com/psf/requests"
 
     async def test_pypi_forge_fallback_from_homepage(self):
-        from depaudit.signals.registry_meta import _pypi_metadata
+        from tools.scan.signals.registry_meta import _pypi_metadata
 
         data = {"info": {"project_urls": {}, "home_page": "https://github.com/a/b"}}
         session = MagicMock()
@@ -266,7 +266,7 @@ class TestRegistryMetadata:
         assert meta.repo_url == "https://github.com/a/b"
 
     async def test_pypi_no_repo_returns_metadata_with_none(self):
-        from depaudit.signals.registry_meta import _pypi_metadata
+        from tools.scan.signals.registry_meta import _pypi_metadata
 
         data = {"info": {"project_urls": {"Docs": "https://example.com/docs"}}}
         session = MagicMock()
@@ -276,7 +276,7 @@ class TestRegistryMetadata:
         assert meta.repo_url is None
 
     async def test_npm_repository_object(self):
-        from depaudit.signals.registry_meta import _npm_metadata
+        from tools.scan.signals.registry_meta import _npm_metadata
 
         data = {"repository": {"url": "git+https://github.com/a/b.git"}}
         session = MagicMock()
@@ -286,7 +286,7 @@ class TestRegistryMetadata:
         assert meta.repo_url == "https://github.com/a/b"
 
     async def test_npm_repository_string(self):
-        from depaudit.signals.registry_meta import _npm_metadata
+        from tools.scan.signals.registry_meta import _npm_metadata
 
         data = {"repository": "https://github.com/a/b"}
         session = MagicMock()
@@ -321,7 +321,7 @@ class TestRepoUrlCollector:
         session = MagicMock()
         session.url_exists = AsyncMock(return_value=exists)
         with patch(
-            "depaudit.signals.identity.repo_url.get_registry_metadata",
+            "tools.scan.signals.identity.repo_url.get_registry_metadata",
             new=AsyncMock(return_value=meta),
         ):
             return await self.c.collect(_dep(), session)
@@ -499,7 +499,7 @@ class TestCollectAll:
 
 class TestHomoglyphCollector:
     def setup_method(self):
-        from depaudit.signals.identity.homoglyph import HomoglyphCollector
+        from tools.scan.signals.identity import HomoglyphCollector
 
         self.c = HomoglyphCollector()
 
@@ -530,7 +530,7 @@ class TestHomoglyphCollector:
 
 class TestInsecureUrlCollector:
     def setup_method(self):
-        from depaudit.signals.provenance.insecure_url import InsecureUrlCollector
+        from tools.scan import InsecureUrlCollector
 
         self.c = InsecureUrlCollector()
 
@@ -560,7 +560,7 @@ class TestInsecureUrlCollector:
 
 class TestInstallScriptCollector:
     def setup_method(self):
-        from depaudit.signals.behavior.install_script import InstallScriptCollector
+        from tools.scan.signals.behavior.install_script import InstallScriptCollector
 
         self.c = InstallScriptCollector()
 
@@ -568,15 +568,15 @@ class TestInstallScriptCollector:
         assert self.c.dimension == Dimension.BEHAVIOR
 
     def _patch_meta(self, meta):
-        from depaudit.signals.registry_meta import PackageMetadata  # noqa: F401
+        from tools.scan.signals.registry_meta import PackageMetadata  # noqa: F401
 
         return patch(
-            "depaudit.signals.behavior.install_script.get_package_metadata",
+            "tools.scan.signals.behavior.install_script.get_package_metadata",
             new=AsyncMock(return_value=meta),
         )
 
     async def test_install_script_flags_high(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         meta = PackageMetadata(has_install_script=True)
         with self._patch_meta(meta):
@@ -586,7 +586,7 @@ class TestInstallScriptCollector:
         assert sigs[0].severity == Severity.HIGH
 
     async def test_no_install_script_no_signal(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         with self._patch_meta(PackageMetadata(has_install_script=False)):
             sigs = await self.c.collect(_dep(ecosystem="javascript"), MagicMock())
@@ -594,7 +594,7 @@ class TestInstallScriptCollector:
 
     async def test_unsupported_ecosystem_no_metadata_call(self):
         with patch(
-            "depaudit.signals.behavior.install_script.get_package_metadata",
+            "tools.scan.signals.behavior.install_script.get_package_metadata",
             new=AsyncMock(return_value=None),
         ) as m:
             sigs = await self.c.collect(_dep(ecosystem="python"), MagicMock())
@@ -613,7 +613,7 @@ class TestInstallScriptCollector:
 
 class TestVersionPublishedCollector:
     def setup_method(self):
-        from depaudit.signals.provenance.version_published import (
+        from tools.scan.signals.provenance.version_published import (
             VersionPublishedCollector,
         )
 
@@ -624,12 +624,12 @@ class TestVersionPublishedCollector:
 
     def _patch_meta(self, meta):
         return patch(
-            "depaudit.signals.provenance.version_published.get_package_metadata",
+            "tools.scan.signals.provenance.version_published.get_package_metadata",
             new=AsyncMock(return_value=meta),
         )
 
     async def test_absent_version_flags_high(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         meta = PackageMetadata(
             published_versions=frozenset({"1.0.1", "1.0.2"}),
@@ -642,7 +642,7 @@ class TestVersionPublishedCollector:
         assert sigs[0].severity == Severity.HIGH
 
     async def test_present_version_no_signal(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         meta = PackageMetadata(
             published_versions=frozenset({"1.0.0"}),
@@ -652,7 +652,7 @@ class TestVersionPublishedCollector:
             assert await self.c.collect(_dep(version="1.0.0"), MagicMock()) == []
 
     async def test_empty_published_set_no_signal(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         # No authoritative list -> cannot conclude absence.
         meta = PackageMetadata(published_versions=frozenset(), version_present=False)
@@ -670,7 +670,7 @@ class TestVersionPublishedCollector:
 
 class TestYankedVersionCollector:
     def setup_method(self):
-        from depaudit.signals.vulnerability.yanked import YankedVersionCollector
+        from tools.scan.signals.vulnerability.yanked import YankedVersionCollector
 
         self.c = YankedVersionCollector()
 
@@ -679,12 +679,12 @@ class TestYankedVersionCollector:
 
     def _patch_meta(self, meta):
         return patch(
-            "depaudit.signals.vulnerability.yanked.get_package_metadata",
+            "tools.scan.signals.vulnerability.yanked.get_package_metadata",
             new=AsyncMock(return_value=meta),
         )
 
     async def test_yanked_flags_medium(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         with self._patch_meta(PackageMetadata(version_yanked=True)):
             sigs = await self.c.collect(_dep(), MagicMock())
@@ -693,7 +693,7 @@ class TestYankedVersionCollector:
         assert sigs[0].severity == Severity.MEDIUM
 
     async def test_not_yanked_no_signal(self):
-        from depaudit.signals.registry_meta import PackageMetadata
+        from tools.scan.signals.registry_meta import PackageMetadata
 
         with self._patch_meta(PackageMetadata(version_yanked=False)):
             assert await self.c.collect(_dep(), MagicMock()) == []
@@ -709,7 +709,7 @@ class TestYankedVersionCollector:
 
 class TestArchivedRepoCollector:
     def setup_method(self):
-        from depaudit.signals.popularity.archived import ArchivedRepoCollector
+        from tools.scan.signals.popularity.archived import ArchivedRepoCollector
 
         self.c = ArchivedRepoCollector()
 
@@ -719,17 +719,17 @@ class TestArchivedRepoCollector:
     def _patch(self, meta, repo):
         return (
             patch(
-                "depaudit.signals.popularity.archived.get_registry_metadata",
+                "tools.scan.signals.popularity.archived.get_registry_metadata",
                 new=AsyncMock(return_value=meta),
             ),
             patch(
-                "depaudit.signals.popularity.archived.get_repo",
+                "tools.scan.signals.popularity.archived.get_repo",
                 new=AsyncMock(return_value=repo),
             ),
         )
 
     async def test_archived_flags_high(self):
-        from depaudit.signals.github import GitHubRepo
+        from tools.scan.signals.github import GitHubRepo
 
         repo = GitHubRepo(owner="a", repo="b", archived=True, stars=5)
         p_meta, p_repo = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
@@ -740,7 +740,7 @@ class TestArchivedRepoCollector:
         assert sigs[0].severity == Severity.HIGH
 
     async def test_active_repo_no_signal(self):
-        from depaudit.signals.github import GitHubRepo
+        from tools.scan.signals.github import GitHubRepo
 
         repo = GitHubRepo(owner="a", repo="b", archived=False, stars=100)
         p_meta, p_repo = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
@@ -765,24 +765,24 @@ class TestArchivedRepoCollector:
 
 class TestGitHubHelper:
     def test_parse_slug_basic(self):
-        from depaudit.signals.github import parse_repo_slug
+        from tools.scan.signals.github import parse_repo_slug
 
         assert parse_repo_slug("https://github.com/psf/requests") == ("psf", "requests")
 
     def test_parse_slug_strips_dot_git_and_extra_path(self):
-        from depaudit.signals.github import parse_repo_slug
+        from tools.scan.signals.github import parse_repo_slug
 
         assert parse_repo_slug("https://github.com/a/b.git") == ("a", "b")
         assert parse_repo_slug("https://github.com/a/b/tree/main") == ("a", "b")
 
     def test_parse_slug_non_github_none(self):
-        from depaudit.signals.github import parse_repo_slug
+        from tools.scan.signals.github import parse_repo_slug
 
         assert parse_repo_slug("https://gitlab.com/a/b") is None
         assert parse_repo_slug(None) is None
 
     async def test_get_repo_maps_fields(self):
-        from depaudit.signals.github import get_repo
+        from tools.scan.signals.github import get_repo
 
         session = MagicMock()
         session.get_json = AsyncMock(
@@ -793,7 +793,7 @@ class TestGitHubHelper:
         assert repo.stars == 42
 
     async def test_get_repo_non_github_none(self):
-        from depaudit.signals.github import get_repo
+        from tools.scan.signals.github import get_repo
 
         session = MagicMock()
         session.get_json = AsyncMock(return_value={"archived": True})
@@ -806,7 +806,7 @@ class TestGitHubHelper:
 
 class TestPackageMetadata:
     async def test_pypi_published_and_yanked(self):
-        from depaudit.signals.registry_meta import _pypi_package_metadata
+        from tools.scan.signals.registry_meta import _pypi_package_metadata
 
         data = {
             "releases": {
@@ -825,7 +825,7 @@ class TestPackageMetadata:
         assert meta.version_yanked is True
 
     async def test_npm_install_script_detection(self):
-        from depaudit.signals.registry_meta import _npm_package_metadata
+        from tools.scan.signals.registry_meta import _npm_package_metadata
 
         data = {
             "versions": {
@@ -840,7 +840,7 @@ class TestPackageMetadata:
         assert meta.version_present is True
 
     async def test_npm_install_script_via_scripts_field(self):
-        from depaudit.signals.registry_meta import _npm_package_metadata
+        from tools.scan.signals.registry_meta import _npm_package_metadata
 
         data = {"versions": {"1.0.0": {"scripts": {"postinstall": "node x.js"}}}}
         session = MagicMock()
@@ -850,7 +850,7 @@ class TestPackageMetadata:
         assert meta.has_install_script is True
 
     async def test_crates_yanked(self):
-        from depaudit.signals.registry_meta import _crates_package_metadata
+        from tools.scan.signals.registry_meta import _crates_package_metadata
 
         data = {
             "versions": [
@@ -876,7 +876,7 @@ class TestPackageMetadata:
 
 class TestSessionCache:
     async def test_get_json_memoised(self):
-        from depaudit.signals.provenance.http import RateLimitedSession
+        from tools.scan.signals.provenance.http import RateLimitedSession
 
         sess = RateLimitedSession()
         calls = {"n": 0}

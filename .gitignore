@@ -211,6 +211,7 @@ tempCodeRunnerFile.py
 
 # Local dev scripts (not for CI or production)
 scripts/
+*/scripts/
 
 # Marimo
 marimo/_static/
