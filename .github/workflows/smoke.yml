@@ -1,0 +1,57 @@
+name: Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cli-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Create smoke fixture repository
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("smoke-fixture")
+          root.mkdir(exist_ok=True)
+          (root / "uv.lock").write_text(
+              'version = 1\nrequires-python = ">=3.12"\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = { virtual = "." }\n'
+          )
+          (root / "package-lock.json").write_text(
+              '{"lockfileVersion": 3, "packages": {"": {"name": "example"}}}'
+          )
+          (root / "Cargo.lock").write_text(
+              'version = 3\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc123"\n'
+          )
+          print(f"Created {root.resolve()}")
+          PY
+
+      - name: Discovery smoke test
+        run: python -m depaudit.core.discovery smoke-fixture
+
+      - name: JSON output smoke test
+        run: depaudit --json smoke-fixture
