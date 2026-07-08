@@ -1,131 +1,137 @@
-# CLAUDE.md — depaudit Project Development Rules
+# CLAUDE.md — depaudit Project Development Rules (v2.1: Agent Architecture)
 
-This document defines the architectural and development constraints for **depaudit**, a dependency provenance and trust-auditing tool. All code contributions, module additions, and dependency changes must conform to the boundaries and principles defined here.
+This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **depaudit** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
+
+The single most important thing to understand before reading further: **the agent layer changes *how work is scheduled*, not *how decisions are made*.** Every v1 iron rule about the scorer being the sole decision point and the LLM only escalating (never downgrading) survives verbatim. The graph is a scheduler on top of the v1 signal→scorer model, not a replacement for it.
+
+---
+
+## 0. Migration Note (v1 → v2)
+
+| Aspect | v1 | v2 |
+|---|---|---|
+| Execution model | One CI run, one execution, then exit | CI audit **and** interactive query, both finite (still no daemon) |
+| Stages 0–3 | Inline pipeline code | Frozen, wrapped as typed deterministic tools |
+| Stage 4 (LLM deep analysis) | Single step | Fan-out to per-dimension LLM specialist nodes |
+| Stage 5 (Report/Gate = scorer) | Final pipeline step | Terminal reducer node; still the only decision point |
+| Orchestration | Sequential function calls | LangGraph state machine |
+| Signal → scorer flow | Static + LLM signals → scorer | **Unchanged.** Graph nodes are just signal producers |
+| Cache | In-process / filesystem / S3 | Redis (short-term) + PGVector (long-term) |
+| Concurrency | Local per-host semaphores | Redis-backed distributed semaphores |
+
+**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** depaudit gains an agent mode, but every execution is still **triggered and finite** — a CI event, a webhook, or an explicit CLI/API query — never a persistent monitor.
 
 ---
 
 ## 1. Project Scope and Boundaries
 
-┌─────────────────────────────────────────────────────────┐
-│  Stage 0: Discovery        发现锁文件                      │
-│  扫描 repo → 识别 uv.lock / poetry.lock / package-lock... │
-└────────────────────┬────────────────────────────────────┘
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│  Stage 1: Parse & Normalize   解析为统一依赖模型           │
-│  每个依赖 → {name, version, hash, source_url, is_direct, layer_number, parent_url}    │
-└────────────────────┬────────────────────────────────────┘
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│  Stage 2: Hash Verification   哈希溯源（廉价、并行）        │
-│  锁文件hash ⟷ registry实际发行版hash ⟷ 源码repo            │
-└────────────────────┬────────────────────────────────────┘
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│  Stage 3: Cheap Signals       廉价信号采集（全量、并行）    │
-│  registry元数据/维护者/发布节奏/下载量/Scorecard...        │
-└────────────────────┬────────────────────────────────────┘
-                     ▼
-        ┌────── 风险打分 + 阈值过滤 ──────┐
-        │  只有可疑的少数进入下一阶段       │
-        ▼                                 
-┌─────────────────────────────────────────────────────────┐
-│  Stage 4: Deep Analysis (LLM)  深度分析（昂贵、选择性）     │
-│  clone repo → diff分析 / install脚本 / 混淆代码 / 社工迹象 │
-└────────────────────┬────────────────────────────────────┘
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│  Stage 5: Report & Gate       报告 + 决定是否 fail         │
-│  SARIF / Markdown / JSON  →  exit code 控制 CI            │
-└─────────────────────────────────────────────────────────┘
-
 ### 1.1 Goal
-Automatically discover dependency lockfiles in CI workflows, traverse their dependencies, evaluate trustworthiness across multiple dimensions, identify indicators of **social engineering attacks** and **dependency injection attacks**, and fail the CI pipeline when necessary.
+Discover dependency lockfiles, traverse dependencies, evaluate trust across five dimensions, identify social-engineering and dependency-injection indicators, and either (a) gate a CI pipeline, or (b) answer an interactive investigation query — using the same deterministic signals and the same scorer in both modes. The agent reasons about *what to investigate*, never *what the verdict is*.
 
 ### 1.2 Clear Differentiation
-- **No wheel reinvention**: Reuse mature open-source components (Syft, OSV.dev) for established domains like CVE scanning and SBOM generation.
-- **Core value**: Multi-dimensional trust scoring + LLM-driven analysis of social engineering and behavioral intent.
-- **Blind-spot coverage**: Address what mainstream tools miss — malicious behavioral intent and broken provenance chains.
+Unchanged from v1: reuse Syft/OSV.dev; core value is multi-dimensional trust scoring + LLM intent analysis; blind-spot coverage is malicious behavioral intent + broken provenance. v2 additionally reuses LangGraph/LangChain instead of building a bespoke agent runtime.
 
-### 1.3 Hard Scope Constraints
-- **CI mode only**. No support for offline / airgapped scenarios.
-- **Multi-language support**: All ecosystem-specific logic must be plugin-based. Hardcoding is forbidden.
-- **Custom registry support**: Including private sources like internal PyPI, Artifactory, etc.
-- **No real-time monitoring / agent mode**: One CI run, one execution, then exit.
+### 1.3 Hard Scope Constraints (revised)
+- **Two entrypoints, both finite**: `audit` (CI/webhook trigger, full repo, produces exit code) and `query` (interactive, single question, evidence only — **no exit code, no gate**). See §6.2.
+- **Multi-language support**: ecosystem logic stays plugin-based (unchanged).
+- **Custom registry support**: unchanged.
+- **Bounded agent autonomy**: agents choose *which Stage-4 specialists to invoke and in what order*. They may **not** reorder or skip Stages 0–3, invent gate logic, or bypass the scorer. See §2.5 for why this boundary is a security property, not just tidiness.
 
 ### 1.4 First-Release Priority
-Ecosystem implementation order: **Python (uv/poetry/pip) → npm/pnpm → Cargo → Go modules → Maven/Gradle**. The first two cover ~90% of real-world scenarios. Prioritize quality over breadth.
+Unchanged: Python (uv/poetry/pip) → npm/pnpm → Cargo → Go modules → Maven/Gradle.
 
 ---
 
-## 2. Overall Architecture (Pipeline + Tiered Triggering)
+## 2. Architecture: Deterministic Spine + Agentic Fan-Out
 
-### 2.1 Six Stages
-```
-Stage 0: Discovery         Detect lockfiles
-Stage 1: Parse & Normalize  Convert to unified dependency model
-Stage 2: Hash Verification  Provenance via hash (cheap, parallel)
-Stage 3: Cheap Signals      Collect cheap signals (full sweep, parallel)
-          ↓ Risk scoring + threshold filtering
-Stage 4: Deep Analysis      LLM-based deep analysis (expensive, selective)
-Stage 5: Report & Gate      Emit reports + CI decision
-```
+The v1 pipeline is preserved as a **fixed deterministic spine**. Agent discretion is confined to a single, well-bounded region: choosing which LLM specialists examine the small suspicious subset after the Stage-3 gate.
 
-### 2.2 Tiered Triggering (First Principle)
-- A gate must exist after Stage 3: **the vast majority of dependencies are classified as low-risk during cheap signal collection and skip Stage 4**.
-- Only dependencies scoring in the "gray / suspicious" range proceed to deep analysis.
-- This is a prerequisite for the tool's viability in CI, not an optimization.
+### 2.1 Stages 0–3 as Deterministic Tools (frozen)
 
-### 2.3 Direct vs Transitive Dependencies
-- **Direct dependencies**: Strict mode. All dimensions + LLM deep analysis.
-- **Transitive dependencies**: Cheap signals + hash verification only.
-- **Exception**: If a transitive dependency is detected to have install-time scripts (a Stage 3 cheap signal), escalate to deep analysis.
+| Tool | Wraps | LLM? | Output |
+|---|---|---|---|
+| `discover_lockfiles` | Stage 0 | no | lockfile paths |
+| `parse_normalize` | Stage 1 | no | unified `Dependency[]` |
+| `verify_hash` | Stage 2 | no | provenance signals |
+| `collect_cheap_signals` | Stage 3 | no | identity/behavior/provenance/popularity/vulnerability **static** signals |
 
-### 2.4 Install-time Script Detection Rules
-- **Python**: `setup.py` exists and is non-empty (distinguished from a pure `pyproject.toml` setup).
-- **npm**: `package.json` `scripts` field contains `preinstall` / `install` / `postinstall`.
-- **Rust**: A `build.rs` file is present.
-- **Other ecosystems**: Explicitly defined in their adapter.
+All four are LangChain `@tool` functions with strict Pydantic I/O. They must stay pure, **idempotent, and LLM-free** — idempotency matters now because a nondeterministic agent may retry them. This is v1 §4.4's "forbidden for LLM" list, now enforced *structurally* by the tool boundary rather than by convention.
+
+### 2.2 The Two Routing Decisions (kept distinct on purpose)
+
+v2 has **two** separate branch points. Conflating them was the main design error to avoid:
+
+**(A) Entry router — splits on request *scope*, known at entry, no risk involved.**
+- `query` for a single package, or a direct question → **single-agent path**.
+- `audit` over a full repo → **full-spine path**.
+This is pure decomposition. It cannot depend on risk, because *no signals have been collected yet* — you cannot know a package is a dependency-confusion candidate until Stage 3 has run.
+
+**(B) Post-Stage-3 gate — splits on *risk*, known only after cheap signals.**
+This is v1 §2.2's tiered trigger, unchanged: the vast majority of deps are low-risk and skip Stage 4; only gray-zone deps fan out to LLM specialists. **This is where "complexity" actually enters** — and it enters as a data-driven gate, not an entry-time guess.
+
+Keeping (A) and (B) separate is what makes the design coherent: scope is a routing concern, risk is a scorer concern, and they live in different places.
+
+### 2.3 Stage-4 Specialists (the fan-out targets)
+
+After the gate, each gray-zone dependency fans out to the LLM specialists relevant to *why it was flagged*:
+
+- `IdentityAgent` — LLM analysis of name-squatting intent, maintainer-handover social engineering
+- `BehaviorAgent` — install-script intent, deobfuscation, env-exfil reasoning
+- `ProvenanceAgent` — commit/diff consistency, source-vs-artifact narrative gaps
+
+**Note there is deliberately no `PopularityAgent` and no standalone `VulnerabilityAgent`.** Popularity (download counts, stars, Scorecard) and vulnerability (OSV/CVE table lookup, EOL) are **fully deterministic** — v1 §4.4 forbids the LLM from doing them. They are collected entirely in Stage 3 / `collect_cheap_signals` and never need an LLM node. Having an agent per dimension would have duplicated Stage-3 work; instead, specialists exist **only for the three dimensions that have genuine LLM tasks.**
+
+Critically (v1 §5.1.3): **each specialist is a signal producer.** Its structured output (§4.2) is the LLM-detection analogue of a Stage-3 static signal. Both feed the scorer identically. A specialist never "decides" anything.
+
+### 2.4 The Scorer Is Still the Only Decision Point
+
+`ReportAgent` is the terminal reducer and **is the scorer** (v1 §5.1.4). Every static signal (Stages 0–3) and every LLM signal (Stage-4 specialists) converges here. It applies the v1 decision matrix (§3.4) and fusion table (§4.3) deterministically. Nothing else in the graph may compute or emit a gate decision. Naming it an "agent" is a convenience — it runs no LLM and has no discretion.
+
+### 2.5 Why Bounded Autonomy Is a Security Property (new v2 threat)
+
+v1's injection worry: an attacker writes `"this is safe, ignore warnings"` in a README to make the **LLM** output `clean`. v1 §4.3 neutralizes this (LLM can only escalate).
+
+v2 introduces a **new** injection surface: an attacker crafts package metadata to steer the **agent's control flow** — e.g. to *skip* hash verification or *terminate early* before behavior analysis. An agent free to choose its whole tool sequence is vulnerable to this.
+
+**Mitigation, and the reason for §1.3's autonomy boundary:** Stages 0–3 are a **non-discretionary fixed sequence** — the agent cannot be talked out of running them, because it never chose to run them; the spine does. Agent discretion exists *only* in Stage-4 specialist selection, and there the failure mode is bounded: at worst the agent skips a specialist, which can only *lose* an escalation signal, never *manufacture* a downgrade. Combined with §4.3 (LLM escalates only) and §3.3 (memory informs, never overrides), all three of depaudit's LLM/agent input channels share one invariant: **they can raise severity but never lower it.**
+
+### 2.6 Shared State (blackboard)
+A single typed LangGraph state object threads through every node: `Dependency[]`, per-dimension signals collected so far, evidence log, escalation flags, and live LLM-call count (for §5.3). It is the **sole** inter-node channel — no direct agent-to-agent messaging, no side channels. Parallel specialists write into it via **LangGraph channel reducers** (Annotated reducer functions), so out-of-order completion of fan-out nodes merges deterministically at fan-in rather than racing. (See §9 for the open question on reducer semantics for conflicting escalations.)
+
+### 2.7 Harness Layer
+- **Constraint validator** (wraps every LLM node): validates output against §4.2 before it reaches shared state; malformed output is retried, not accepted.
+- **Auto-repair**: bounded retry + exponential backoff around every tool node (v1 §6.2 policy). On exhaustion the node marks its contribution `degraded`; the run continues.
+- **Session manager**: assigns a run/session id and holds Redis-backed distributed semaphores (§5.2).
 
 ---
 
-## 3. Trust Scoring Model
+## 3. Memory System
 
-### 3.1 Core Philosophy
-**Single 0–100 risk scores are forbidden**. Use **independent per-dimension scoring + dimension-level thresholds + severity tiers**.
+### 3.1 Short-Term Memory — Redis
+- LangGraph checkpointer backend: mid-run state survives node retries and enables resume.
+- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse on the same repo/branch, TTL 7 days (v1 L2).
+- Distributed semaphore store (§5.2).
 
-### 3.2 Five Dimensions
-1. **Identity**: Is this package what it claims to be?
-2. **Behavior**: What is this package actually doing?
-3. **Provenance**: Does the published artifact match its source code?
-4. **Popularity**: Does the community endorse this package?
-5. **Vulnerability**: Known CVEs and EOL status.
+Note: within a single graph run, parallel specialists synchronize via LangGraph fan-in (§2.6), **not** via Redis pub/sub. Redis holds state and rate limits; it is not a message bus between nodes.
 
-### 3.3 Scoring Rules
-- Each dimension is scored independently as `low / medium / high / critical`.
-- **Final severity = max(per-dimension severities)** (weakest-link principle).
-- Risks across dimensions are not additive. Weighted summation is forbidden — it blurs critical signals.
+### 3.2 Long-Term Memory — PGVector
+- Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns).
+- Used purely as **retrieval context**: before a Stage-4 specialist runs, PGVector is queried for prior or behaviorally-similar findings and those are supplied as few-shot context. This cuts redundant deep analysis (cost) and grounds the LLM in prior evidence.
+- Replaces v1's L3 (S3/Redis team cache). PGVector is now the canonical long-term store; Redis stays hot/short-term only.
 
-### 3.4 Decision Matrix
-| Max Dimension Severity | Default Action | Configurable Override |
-|------------------------|----------------|----------------------|
-| critical | block (exit 1) | allowlist exemption |
-| high | block (exit 1) | downgrade to warn |
-| medium | warn (exit 0) | upgrade or ignore |
-| low | info | ignore |
-
-### 3.5 Stricter Rules for New Dependencies
-**Newly introduced dependencies are treated more strictly than existing ones**. Existing dependencies (presumed to have passed prior review) may be relaxed by one tier. This prevents CI from being repeatedly blocked by legacy dependencies while keeping sensitivity to new threats.
+### 3.3 Memory Safety Boundary (iron rule, extended)
+- Retrieved memory may **inform** LLM reasoning; it may **never** downgrade the current run's severity. A prior `clean` verdict on the same hash is evidence, not an override — because memory is another attacker-poisonable input channel, subject to the same "escalate-only" invariant as §2.5 and §4.3.
+- Long-term writes happen **only after** `ReportAgent` finalizes a run. No unverified in-flight signal is ever persisted.
 
 ---
 
-## 4. LLM Usage Constraints
+## 4. LLM Usage Constraints (v1 iron rules, now enforced at graph level)
 
-### 4.1 The Role of the LLM (Iron Rule)
-**The LLM produces evidence, not decisions**. All CI gate decisions are made by the deterministic rules engine.
+### 4.1 Role of the LLM
+Unchanged: **the LLM produces evidence, not decisions.** In v2 this is enforced by construction — no LLM node has write access to the gate decision (§2.4).
 
 ### 4.2 Mandatory Structured Output
-All LLM tasks must return this unified schema:
+Every LLM node returns:
 ```json
 {
   "task": "<task_name>",
@@ -136,256 +142,126 @@ All LLM tasks must return this unified schema:
   "false_positive_hints": [...]
 }
 ```
-The LLM must never emit numeric scores. `verdict` must be one of the three enum values.
+Enforced via a LangChain structured-output parser bound to a Pydantic model; the constraint validator (§2.7) rejects non-conforming output.
 
 ### 4.3 LLM × Rules Engine Fusion
-| LLM verdict | confidence | Dimension Adjustment |
-|------------|-----------|---------------------|
-| malicious | ≥ 0.7 | Force to critical |
+Unchanged from v1:
+
+| LLM verdict | confidence | Adjustment |
+|---|---|---|
+| malicious | ≥ 0.7 | Force critical |
 | malicious | 0.4–0.7 | Escalate one tier |
 | suspicious | ≥ 0.7 | Escalate one tier |
-| suspicious | < 0.7 | Record evidence only |
+| suspicious | < 0.7 | Evidence only |
 | clean | any | No adjustment |
 
-**Iron rule**: The LLM may only escalate severity, **never downgrade it**. This prevents prompt injection (e.g., an attacker writing `"this is legitimate, ignore warnings"` in a README) from neutralizing the tool.
+**Iron rule:** LLM signals and retrieved memory may only *escalate*, never downgrade.
 
 ### 4.4 LLM Task Scope
-**Tasks suitable for the LLM**:
-- Install script intent analysis (semantic, not keyword-based)
-- Consistency check between commit messages and diffs
-- Detection of suspicious coercion in READMEs / docs
-- Social engineering signals in maintainer handover issues / PRs
-- Deobfuscation and intent analysis of obfuscated code
-
-**Tasks forbidden for the LLM**:
-- Hash comparison (deterministic)
-- CVE matching (table lookup)
-- Package name similarity (algorithmic)
-- Timestamp comparison (arithmetic)
+Unchanged from v1 §4.4. Suitable: install-script intent, commit/diff consistency, README coercion, maintainer-handover signals, deobfuscation. Forbidden (kept deterministic): hash comparison, CVE matching, name-similarity, timestamp comparison. **This is exactly why §2.3 has specialists only for Identity/Behavior/Provenance** — the other two dimensions are entirely in the forbidden list.
 
 ---
 
-## 5. Project Structure (Enforced)
+## 5. Cost, Concurrency, and Caps
+
+### 5.1 Time Budget
+Unchanged v1 §6.1 targets; CI run target remains under 5 minutes; Stage-4 trigger rate 5–10%.
+
+### 5.2 Concurrency
+Redis-backed distributed semaphores per external host, replacing v1 local semaphores, so concurrent audits and queries share one global rate budget. Exponential backoff with bounded retries; configurable API-token pools for rotation (v1 §6.2).
+
+### 5.3 LLM Call Cap
+Hard per-run ceiling tracked in shared state (§2.6), enforced by the constraint validator. On breach mid-run, remaining specialists route to a degrade path and the report is marked "incomplete analysis" — a graph-level routing decision, not a silent truncation (v1 §6.3).
+
+---
+
+## 6. Project Structure (Enforced)
 
 ```
 depaudit/
-├── core/                      # Core pipeline, must be ecosystem-agnostic
-│   ├── pipeline.py
-│   ├── scorer/
-│   ├── cache/
-│   ├── reporter/
-│   └── gate.py
-├── ecosystems/                # Ecosystem adapters (plugins)
-│   ├── base.py               # EcosystemAdapter ABC
-│   ├── python/
-│   ├── javascript/
-│   ├── rust/
-│   └── ...
-├── signals/                   # Signal collectors, must be ecosystem-agnostic
-│   ├── identity/
-│   ├── behavior/
-│   ├── provenance/
-│   ├── popularity/
-│   └── vulnerability/
-├── llm/                       # LLM analysis modules
-│   ├── client.py
-│   ├── prompts/
-│   ├── schemas.py
-│   └── tasks/
-├── config/
-└── cli/
+├── entrypoints/                  # thin adapters; both call graph.run()
+│   ├── api.py                    # FastAPI app (audit + query routes, webhook)
+│   └── cli.py                    # legacy one-shot CLI
+├── graph/                        # LangGraph orchestration (the scheduler)
+│   ├── state.py                  # shared Pydantic state + channel reducers (§2.6)
+│   ├── router.py                 # scope split only (§2.2-A)
+│   ├── single_agent.py           # single-package ReAct path
+│   ├── spine.py                  # fixed Stage 0→1→2→3 sequence + post-gate fan-out (§2.2-B)
+│   ├── specialists/
+│   │   ├── identity_agent.py
+│   │   ├── behavior_agent.py
+│   │   └── provenance_agent.py   # (no popularity/vulnerability agent — §2.3)
+│   ├── report_agent.py           # terminal reducer == scorer, sole decision writer (§2.4)
+│   └── harness/
+│       ├── constraint_validator.py
+│       ├── auto_repair.py
+│       └── session_manager.py
+├── tools/                        # Stages 0–3 frozen, wrapped; LLM-free
+│   ├── discovery_tool.py
+│   ├── parse_normalize_tool.py
+│   ├── hash_verify_tool.py
+│   ├── cheap_signals_tool.py
+│   └── deep_analysis_tool.py     # Stage-4 primitives the specialists call
+├── memory/
+│   ├── short_term.py             # Redis: checkpointer + semaphores + hot cache
+│   └── long_term.py              # PGVector: embed + retrieve
+├── core/                         # unchanged v1 pipeline internals (called by tools/)
+├── ecosystems/                   # unchanged plugin adapters
+├── signals/                      # unchanged static signal collectors
+└── reporter/                     # SARIF / Markdown / JSON (unchanged)
 ```
 
-### 5.1 Module Dependency Rules (Architectural Iron Rules)
-1. **The `signals` layer must not know about `ecosystems`**. It receives standardized `Dependency` objects and interacts with the outside world only through adapter interfaces.
-2. **The `ecosystems` layer must not know about `signals`**. Adapters are responsible only for data retrieval, never for judgment.
-3. **LLM tasks are conceptually signals**. Stage 3 uses static detection; Stage 4 uses LLM detection. Their output formats are identical and both feed into the scorer.
-4. **The scorer is the single decision point**. All signals converge at the scorer to produce the final judgment. **No signal may fail CI on its own**.
-
-### 5.2 Required EcosystemAdapter Interface
-```
-LockfileParser           # Parse lockfiles
-RegistryClient           # Query registry
-InstallScriptDetector    # Identify install-time execution points
-HashVerifier             # Verify hashes
-SourceLocator            # Locate source repo from registry metadata
-```
+### 6.1 Structural Invariants
+1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — v2 form of v1 §5.1.4.
+2. **`tools/` stays LLM-free.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. (`deep_analysis_tool.py` provides deterministic primitives — clone, diff, extract — that specialists call; the *reasoning* lives in the specialist node.)
+3. **Adding an ecosystem still means one adapter under `ecosystems/`**, untouched by the agent layer (v1 §5.1, §13.5).
+4. **The graph is the core; `entrypoints/` are thin.** CLI and API both call `graph.run(request)`; neither contains audit logic and the CLI does not shell out to the HTTP server.
+5. **v1 layering preserved:** `signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 
 ---
 
-## 6. Performance and Concurrency Constraints
-
-### 6.1 Time Budget (300-dependency project)
-| Stage | Per-Dependency | Concurrency | Total |
-|-------|---------------|-------------|-------|
-| Parse | < 1ms | serial | < 1s |
-| Hash verify | ~100ms | 50 | ~1 min |
-| Cheap signals | ~500ms | 20 | ~2–3 min |
-| Deep analysis | ~5–15s | 5 | depends on trigger rate |
-
-**Target**: A typical CI run completes in **under 5 minutes**. Deep analysis trigger rate must be kept within **5–10%**.
-
-### 6.2 Mandatory Concurrency Controls
-- **Per-host semaphores** (e.g., limit GitHub API to 10 concurrent calls).
-- **Exponential backoff with retry cap**. Retries are bounded.
-- **API token pools**: Allow users to configure multiple tokens for rotation.
-
-### 6.3 LLM Cost Controls
-- Enable prompt caching (cache the tool's system prompt).
-- A hard ceiling on LLM calls per CI run is mandatory. When exceeded, downgrade to static-only analysis and clearly mark the report as "incomplete analysis".
-
----
-
-## 7. Caching Strategy
-
-### 7.1 Cache Key Design
-```
-cache_key = f"{package}@{version}+{hash}+{analyzer_version}"
-```
-**`analyzer_version` is mandatory**. When rules are updated or the LLM model is swapped, stale cache entries are automatically invalidated.
-
-### 7.2 Three-Tier Cache
-| Tier | Storage | TTL | Contents |
-|------|---------|-----|----------|
-| L1 | In-process memory | Single run | Parsed lockfiles, API responses |
-| L2 | CI filesystem | 7 days | Hash verification, registry metadata |
-| L3 | Team-shared (S3/Redis) | 30 days | LLM analysis results |
-
-### 7.3 Forced Invalidation Triggers
-- Maintainer change (even if version is unchanged)
-- Package yanked / unpublished
-- New CVE published
-- Analyzer version upgrade
-
----
-
-## 8. Allowlist Mechanism
-
-### 8.1 Security Design Requirements
-The allowlist is mandatory but is itself an attack surface. Enforced rules:
-
-1. **Must bind to hash, not version number**. Prevents attackers from republishing a malicious package under the same version.
-2. **Must include an expiration date**. Auto-expires after six months, forcing re-review.
-3. **Dimension-level exemption only**. Only dimensions explicitly reviewed are exempted; new dimensional signals still trigger.
-4. **Modifications to `.depaudit-allowlist.yaml` must pass CODEOWNERS review**.
-
-### 8.2 Standard Format
-```yaml
-allowlist:
-  - package: "requests"
-    version: "2.31.0"
-    hash: "sha256:abc123..."
-    reason: "Reviewed by @alice, PR #123"
-    reviewed_by: "alice@company.com"
-    expires: "2026-11-20"
-    dimensions:
-      - popularity
-      - vulnerability
-```
-
----
-
-## 9. Custom Registry Support
-
-### 9.1 Configuration-Driven
-```yaml
-registries:
-  python:
-    - url: "https://internal.company.com/pypi"
-      type: "pypi"
-      auth:
-        token_env: "INTERNAL_PYPI_TOKEN"
-      trust_level: "trusted"
-```
-
-### 9.2 Trust Level Handling
-- Packages from internal registries may have certain dimension severities reduced (e.g., popularity).
-- **But hash verification and behavior detection must never be skipped** — this prevents total failure of the tool if the internal registry is compromised.
-
-### 9.3 Dependency Confusion Detection
-Detect "cross-registry namesake" cases: when a package exists with the same name in both an internal and public registry, an attacker can push a higher version to the public registry to hijack resolution. Stage 3 must mark such cases as **high**.
-
----
-
-## 10. Report Output
-
-### 10.1 Three Formats
-1. **SARIF** (primary): Machine-consumable, renders natively in GitHub Security tab.
-2. **Markdown**: PR comment–friendly format.
-3. **JSON**: For programmatic consumption (SIEM / dashboards).
-
-### 10.2 SARIF Default
-Default to SARIF output only (no write permissions required). PR comments are opt-in to avoid demanding GitHub token write access by default.
-
----
-
-## 11. Signal Collection Cheat Sheet
-
-### Identity
-- Package name edit distance ≤ 2 to a popular package → critical
-- Maintainer changed within the last N days → high
-- Registry-declared repo URL does not exist → high
-- Maintainer email domain registered recently → medium
-
-### Behavior
-- Install-time script with network/file operations → high
-- Large obfuscated / encoded string blob in source → high
-- Reads environment variables and sends them externally → critical (LLM detection)
-- Native binaries present without source → medium
-
-### Provenance
-- Lockfile hash ≠ registry hash → **critical**
-- Registry package contents ≠ git tag contents → high
-- Signature verification failed → critical
-- Missing signature → low
-
-### Popularity
-- Repo archived but still publishing new versions → high
-- High download count with zero stars → medium
-- OpenSSF Scorecard < 3 → low
-
-### Vulnerability
-- OSV.dev critical CVE → critical
-- OSV.dev high CVE → high
-- Package is EOL → medium
-
----
-
-## 12. Tech Stack
+## 7. Tech Stack (v2)
 
 | Layer | Choice | Rationale |
-|-------|--------|-----------|
-| Primary language | Python | uv/pip toolchain ecosystem, mature LLM SDKs |
-| Lockfile parsing | Reuse Syft → CycloneDX SBOM | No need to reinvent |
-| CVE data source | OSV.dev API | Free, broad coverage |
-| Hash verification | Direct calls to each registry's JSON API | Lockfile hash ⟷ registry hash |
-| Repository analysis | Shallow clone + GitHub/GitLab API | Time-efficient |
-| LLM | Claude API | Structured output + prompt caching |
-| Scoring engine | Rule weights + LLM-confidence weighting | Explainability first |
-| Report formats | SARIF + Markdown + JSON | Multi-consumer |
-| CI integration | GitHub Action + standalone CLI | Exit code drives gate |
+|---|---|---|
+| API | FastAPI | Async, typed models, serves `audit` + `query` |
+| Orchestration | LangGraph | Explicit state machine; native fan-out/fan-in; checkpointing |
+| Tool/chain wrapping | LangChain | `@tool` wrapping of Stages 0–3; structured-output parsers |
+| Short-term memory | Redis | Checkpointer, distributed semaphores, hot cache (v1 L1/L2) |
+| Long-term memory | PGVector | Verdict/evidence/attack-fingerprint embeddings (v1 L3) |
+| LLM | Claude API | Structured output + prompt caching (unchanged) |
+| Lockfile parsing | Syft → CycloneDX | Unchanged |
+| CVE source | OSV.dev | Unchanged |
+| Reports | SARIF + Markdown + JSON | Unchanged |
+| CI integration | GitHub Action + CLI | Exit code drives the gate (audit mode only) |
 
 ---
 
-## 13. Development Principles (Quick Reference)
+## 8. Development Principles (v2 Quick Reference)
 
-1. **Explainability > Accuracy**. CI failures must be defensible. Black-box judgments get turned off.
-2. **Deterministic rules > LLM cleverness**. The LLM is a supplement, not a decision-maker.
-3. **Tiered cost control**. Cheap signals run on everything; expensive signals run selectively.
-4. **Graceful degradation**. Failures in network / API / LLM must not crash the tool — degrade to partial analysis and clearly annotate.
-5. **Architecture allows zero-touch ecosystem additions**. Adding a new ecosystem means adding one adapter, not touching the core.
-6. **Spoofable signals carry low weight**. Every signal must be evaluated for how easily an attacker could forge it.
-
----
-
-## 14. Confirmed but Unimplemented
-
-- [ ] LLM prompt template design and prompt-injection defense
-- [ ] Concrete hard cap on LLM calls per CI run
-- [ ] Monorepo / multi-config-file support decision
-- [ ] PR comment opt-in mechanism design
-- [ ] End-to-end walkthrough of real-world attacks (XZ Utils / event-stream / PyTorch dependency confusion)
+1. **Explainability > accuracy** — every escalation traces to a specific static or LLM signal in shared state.
+2. **Deterministic spine > agent cleverness** — the agent chooses *which specialist looks*, never *what the verdict is*.
+3. **Two branch points, kept separate** — scope at entry (§2.2-A), risk at the gate (§2.2-B). Never conflate them.
+4. **Escalate-only, three channels** — LLM signals, retrieved memory, and agent control-flow can each only raise severity, never lower it (§2.5, §3.3, §4.3).
+5. **Graceful degradation** — any node failure degrades that node's contribution and is annotated; it never crashes the run.
+6. **Zero-touch ecosystem additions** — one adapter, no core/graph changes.
+7. **The scorer is still the only judge** — the graph reschedules v1's signal→scorer flow; it does not replace it.
 
 ---
 
-*This is a living document. Significant architectural changes must be reflected here and pass review.*
+## 9. Confirmed but Unimplemented
+
+- [ ] Entry-router scope heuristic — rule-based first pass vs. LLM-assisted (must stay risk-independent, §2.2-A)
+- [ ] Channel-reducer semantics when two specialists escalate the same dependency to conflicting tiers (max-wins is the presumed answer, per weakest-link §3.3 — confirm)
+- [ ] LangGraph Redis checkpointer schema: keying, TTL, eviction
+- [ ] PGVector embedding model + dimensionality; similarity threshold for "behaviorally similar package"
+- [ ] Auth model for the `query` route (new attack surface)
+- [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination
+- [ ] Prompt-injection defense for specialists (carried from v1)
+- [ ] Concrete hard cap value for LLM calls per run (carried from v1)
+- [ ] Monorepo / multi-config-file support (carried from v1)
+- [ ] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1)
+
+---
+
+*Living document. Significant architectural changes must be reflected here and pass review.*
