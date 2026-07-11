@@ -22,6 +22,10 @@ Key boundaries honoured:
   - A dimension already at the decided ceiling (e.g. a confirmed hash mismatch =
     CRITICAL provenance) is recorded but NOT sent to an LLM — the LLM could only
     escalate, and it is already maxed, so spending the call adds no signal (§5.3).
+  - The LLM-call cap (§5.3) is enforced HERE, deterministically: fan-out candidates
+    are ranked by severity and truncated to the remaining budget before any Send, so
+    the ceiling can't be raced past by parallel specialist branches. Truncated deps
+    keep their static escalation and get a degraded/incomplete note.
   - Every stage degrades independently and never crashes the run (§8.5).
 
 The gate core is `plan_gate()`, a pure function unit-tested without LangGraph. The
@@ -40,6 +44,7 @@ from pydantic import BaseModel, Field
 
 from graph.state import (
     AuditState,
+    DegradedNote,
     Dependency,
     Severity,
     Signal,
@@ -286,10 +291,12 @@ class GateConfig(BaseModel):
 class GatePlan(BaseModel):
     """What the gate decided, per dep. `escalations` feeds the max-wins state channel;
     `fan_out` names the specialists to Send to. Deps absent from fan_out are handled
-    deterministically and flow straight to the scorer."""
+    deterministically and flow straight to the scorer. `degraded_notes` records any
+    gray-zone specialist that was dropped because the §5.3 LLM budget was exhausted."""
 
     escalations: dict[str, Severity] = Field(default_factory=dict)
     fan_out: list[SpecialistTask] = Field(default_factory=list)
+    degraded_notes: list[DegradedNote] = Field(default_factory=list)
 
     def escalated_count(self) -> int:
         return len({t.dep_key for t in self.fan_out})
@@ -316,11 +323,22 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
 
     Escalate-only holds: the gate can raise a dep into Stage 4 but never clears a
     signal, and a dep it declines to escalate still carries its full static severity
-    to the scorer."""
+    to the scorer.
+
+    Cap-aware (§5.3): each fan-out task costs one LLM call, so candidates are sorted
+    by trigger severity (highest-risk first) and only the first `llm_call_cap −
+    llm_calls` are emitted. The rest are dropped here — deterministically, before any
+    Send — with a degraded note apiece, rather than letting parallel specialist
+    branches race past the ceiling. Escalations are recorded for ALL gray-zone deps
+    regardless of truncation, so a dropped dep still reaches the scorer at its static
+    severity (a skipped specialist can only lose an escalation, never manufacture a
+    downgrade, §2.5). Because the gate reads the same `llm_calls`/`llm_call_cap` on
+    every call, `gate_node` and `gate_edge` compute an identical truncation."""
     config = config or GateConfig()
     plan = GatePlan()
     by_key = {dep_key(d): d for d in state.dependencies}
 
+    candidates: list[SpecialistTask] = []
     for key, dep in by_key.items():
         dim_sev = _dimension_severity(state.signals, key)
         overall = max((sev for sev, _ in dim_sev.values()), default=Severity.CLEAN)
@@ -330,7 +348,7 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
         for dim in config.llm_dimensions:
             sev, sources = dim_sev.get(dim, (Severity.CLEAN, []))
             if config.gray_floor <= sev < config.decided_ceiling:
-                plan.fan_out.append(
+                candidates.append(
                     SpecialistTask(
                         dep_key=key,
                         dependency=dep,
@@ -339,6 +357,24 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
                         trigger_sources=sources,
                     )
                 )
+
+    # Highest severity first; (dep_key, dimension) as a stable tiebreak so truncation
+    # is fully deterministic regardless of dep/dimension iteration order.
+    candidates.sort(key=lambda t: (-int(t.trigger_severity), t.dep_key, t.dimension.value))
+
+    budget = max(0, state.llm_call_cap - state.llm_calls)
+    plan.fan_out = candidates[:budget]
+    for t in candidates[budget:]:
+        plan.degraded_notes.append(
+            DegradedNote(
+                node=NODE_GATE,
+                reason=(
+                    f"LLM budget exhausted (cap={state.llm_call_cap}, used={state.llm_calls}): "
+                    f"skipped {t.dimension.value} specialist for {t.dep_key} "
+                    f"(trigger={t.trigger_severity.name}); analysis incomplete"
+                ),
+            )
+        )
     return plan
 
 
@@ -348,10 +384,14 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
 
 
 def gate_node(state: AuditState, config: Optional[GateConfig] = None) -> dict:
-    """Writes the gate's escalation view into state (max-wins channel). Fan-out is
-    handled by gate_edge, not here."""
+    """Writes the gate's escalation view into state (max-wins channel), plus any
+    budget-truncation notes (§5.3). Fan-out itself is handled by gate_edge, not here;
+    both call plan_gate and see the same deterministic cap."""
     plan = plan_gate(state, config)
-    return {"escalations": plan.escalations}
+    out: dict = {"escalations": plan.escalations}
+    if plan.degraded_notes:
+        out["degraded_notes"] = plan.degraded_notes
+    return out
 
 
 def gate_edge(state: AuditState, config: Optional[GateConfig] = None):

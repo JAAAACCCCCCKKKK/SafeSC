@@ -259,6 +259,94 @@ def test_gate_node_writes_escalations_only():
 
 
 # --------------------------------------------------------------------------- #
+# Gate is cap-aware (§5.3): truncate fan-out to the remaining LLM budget
+# --------------------------------------------------------------------------- #
+
+def test_plan_gate_truncates_fan_out_to_remaining_budget():
+    # 4 gray-zone candidates, but only budget for 2.
+    deps = [_dep(name=f"pkg{i}") for i in range(4)]
+    signals = [_sig(d, TrustDimension.IDENTITY, Severity.MEDIUM) for d in deps]
+    state = AuditState(dependencies=deps, signals=signals, llm_call_cap=2, llm_calls=0)
+    plan = plan_gate(state)
+    assert len(plan.fan_out) == 2
+    assert len(plan.degraded_notes) == 2
+    # escalations are still recorded for ALL gray-zone deps, truncated or not.
+    assert len(plan.escalations) == 4
+
+
+def test_plan_gate_emits_highest_severity_first():
+    high, med = _dep(name="high"), _dep(name="med")
+    state = AuditState(
+        dependencies=[med, high],  # deliberately not severity-ordered
+        signals=[
+            _sig(med, TrustDimension.IDENTITY, Severity.MEDIUM),
+            _sig(high, TrustDimension.IDENTITY, Severity.HIGH),
+        ],
+        llm_call_cap=1,
+        llm_calls=0,
+    )
+    plan = plan_gate(state)
+    assert [t.dep_key for t in plan.fan_out] == [dep_key(high)]
+    assert plan.degraded_notes and dep_key(med) in plan.degraded_notes[0].reason
+    assert "MEDIUM" in plan.degraded_notes[0].reason
+
+
+def test_plan_gate_accounts_for_already_spent_calls():
+    deps = [_dep(name=f"pkg{i}") for i in range(3)]
+    signals = [_sig(d, TrustDimension.BEHAVIOR, Severity.HIGH) for d in deps]
+    # cap 5, already spent 4 → only 1 call left.
+    state = AuditState(dependencies=deps, signals=signals, llm_call_cap=5, llm_calls=4)
+    plan = plan_gate(state)
+    assert len(plan.fan_out) == 1
+    assert len(plan.degraded_notes) == 2
+
+
+def test_plan_gate_zero_budget_drops_all_fan_out():
+    dep = _dep()
+    state = AuditState(
+        dependencies=[dep],
+        signals=[_sig(dep, TrustDimension.IDENTITY, Severity.HIGH)],
+        llm_call_cap=3,
+        llm_calls=3,  # cap already reached
+    )
+    plan = plan_gate(state)
+    assert plan.fan_out == []
+    assert len(plan.degraded_notes) == 1
+    assert plan.escalations[dep_key(dep)] is Severity.HIGH  # escalate-only preserved
+
+
+def test_plan_gate_truncation_is_deterministic_on_ties():
+    # Equal severity across deps → stable tiebreak on (dep_key, dimension).
+    deps = [_dep(name=n) for n in ("ccc", "aaa", "bbb")]
+    signals = [_sig(d, TrustDimension.IDENTITY, Severity.HIGH) for d in deps]
+    state = AuditState(dependencies=deps, signals=signals, llm_call_cap=2, llm_calls=0)
+    plan1 = plan_gate(state)
+    plan2 = plan_gate(state)
+    kept = [t.dep_key for t in plan1.fan_out]
+    assert kept == [t.dep_key for t in plan2.fan_out]      # deterministic
+    assert kept == [dep_key(deps[1]), dep_key(deps[2])]    # aaa, bbb (lowest keys)
+
+
+def test_gate_node_emits_degraded_notes_on_truncation():
+    deps = [_dep(name=f"pkg{i}") for i in range(3)]
+    signals = [_sig(d, TrustDimension.IDENTITY, Severity.HIGH) for d in deps]
+    state = AuditState(dependencies=deps, signals=signals, llm_call_cap=1, llm_calls=0)
+    out = gate_node(state)
+    assert len(out["escalations"]) == 3
+    assert len(out["degraded_notes"]) == 2
+    assert all(n.node == NODE_GATE for n in out["degraded_notes"])
+
+
+def test_gate_edge_respects_cap(monkeypatch):
+    monkeypatch.setattr(spine, "Send", _FakeSend)
+    deps = [_dep(name=f"pkg{i}") for i in range(4)]
+    signals = [_sig(d, TrustDimension.BEHAVIOR, Severity.HIGH) for d in deps]
+    state = AuditState(dependencies=deps, signals=signals, llm_call_cap=2, llm_calls=0)
+    sends = gate_edge(state)
+    assert isinstance(sends, list) and len(sends) == 2  # capped, not 4
+
+
+# --------------------------------------------------------------------------- #
 # LangGraph glue (fake Send / fake builder — LangGraph not required)
 # --------------------------------------------------------------------------- #
 
