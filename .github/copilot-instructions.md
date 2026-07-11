@@ -1,4 +1,6 @@
-# CLAUDE.md — depaudit Project Development Rules (v2.1: Agent Architecture)
+# CLAUDE.md — depaudit Project Development Rules (v2.2: Agent Architecture)
+
+> **v2.2 (progress sync).** First agent-layer code has landed: the Stage-4 evidence tool (`tools/deep_analysis_tool.py`), the shared state with channel reducers (`graph/state.py`), and the scope-only entry router (`graph/router.py`). Two §9 open questions are now resolved (max-wins reducer; rule-based risk-independent router). Structure diagram in §6 updated to the real tree. See §0.1 for the build status matrix.
 
 This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **depaudit** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
 
@@ -20,6 +22,23 @@ The single most important thing to understand before reading further: **the agen
 | Concurrency | Local per-host semaphores | Redis-backed distributed semaphores |
 
 **v1 §1.3 ("No real-time monitoring / agent mode") is revised.** depaudit gains an agent mode, but every execution is still **triggered and finite** — a CI event, a webhook, or an explicit CLI/API query — never a persistent monitor.
+
+### 0.1 Build Status
+
+| Component | Location | Status |
+|---|---|---|
+| Stages 0–3 (index + scan) | `tools/index/`, `tools/scan/` | ✅ v1, frozen |
+| Stage-4 evidence primitives | `tools/deep_analysis_tool.py` | ✅ implemented, unit-tested |
+| Shared state + channel reducers | `graph/state.py` | ✅ implemented, unit-tested |
+| Entry router (scope only) | `graph/router.py` | ✅ implemented, unit-tested |
+| Deterministic spine (Stage 0→3 + gate) | `graph/spine.py` | ⛔ not started |
+| Stage-4 specialists (Identity/Behavior/Provenance) | `graph/specialists/` | ⛔ not started |
+| Scorer / report_agent | `graph/report_agent.py` | ⛔ not started |
+| Harness (validator / auto-repair / session) | `graph/harness/` | ⛔ not started |
+| Memory (Redis + PGVector) | `memory/` | ⛔ not started |
+| FastAPI entrypoints | `entrypoints/` | ⛔ not started |
+
+Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
 
 ---
 
@@ -61,10 +80,10 @@ All four are LangChain `@tool` functions with strict Pydantic I/O. They must sta
 
 v2 has **two** separate branch points. Conflating them was the main design error to avoid:
 
-**(A) Entry router — splits on request *scope*, known at entry, no risk involved.**
+**(A) Entry router — splits on request *scope*, known at entry, no risk involved.** *(implemented: `graph/router.py`)*
 - `query` for a single package, or a direct question → **single-agent path**.
 - `audit` over a full repo → **full-spine path**.
-This is pure decomposition. It cannot depend on risk, because *no signals have been collected yet* — you cannot know a package is a dependency-confusion candidate until Stage 3 has run.
+This is pure decomposition. It cannot depend on risk, because *no signals have been collected yet* — you cannot know a package is a dependency-confusion candidate until Stage 3 has run. The shipped classifier is **rule-based and risk-independent** (package-spec/purl/npm-scope → single; git URL/lockfile path/`.` → repo; override wins; ambiguous falls back on mode intent). Mode (audit vs query) is orthogonal to scope — it only decides whether a CI gate + exit code is produced, so a read-only query over a full repo is allowed.
 
 **(B) Post-Stage-3 gate — splits on *risk*, known only after cheap signals.**
 This is v1 §2.2's tiered trigger, unchanged: the vast majority of deps are low-risk and skip Stage 4; only gray-zone deps fan out to LLM specialists. **This is where "complexity" actually enters** — and it enters as a data-driven gate, not an entry-time guess.
@@ -81,7 +100,7 @@ After the gate, each gray-zone dependency fans out to the LLM specialists releva
 
 **Note there is deliberately no `PopularityAgent` and no standalone `VulnerabilityAgent`.** Popularity (download counts, stars, Scorecard) and vulnerability (OSV/CVE table lookup, EOL) are **fully deterministic** — v1 §4.4 forbids the LLM from doing them. They are collected entirely in Stage 3 / `collect_cheap_signals` and never need an LLM node. Having an agent per dimension would have duplicated Stage-3 work; instead, specialists exist **only for the three dimensions that have genuine LLM tasks.**
 
-Critically (v1 §5.1.3): **each specialist is a signal producer.** Its structured output (§4.2) is the LLM-detection analogue of a Stage-3 static signal. Both feed the scorer identically. A specialist never "decides" anything.
+Critically (v1 §5.1.3): **each specialist is a signal producer.** Its structured output (§4.2) is the LLM-detection analogue of a Stage-3 static signal. Both feed the scorer identically. A specialist never "decides" anything. The unified `Signal` format both origins share, and the `Signal.from_llm_output()` adapter that maps a §4.2 output through the §4.3 fusion table, are already in `graph/state.py`; a specialist's remaining job is (a) call the `tools/deep_analysis_tool.py` primitives for its dimension, (b) reason, (c) emit a §4.2 `LLMOutput`.
 
 ### 2.4 The Scorer Is Still the Only Decision Point
 
@@ -95,8 +114,14 @@ v2 introduces a **new** injection surface: an attacker crafts package metadata t
 
 **Mitigation, and the reason for §1.3's autonomy boundary:** Stages 0–3 are a **non-discretionary fixed sequence** — the agent cannot be talked out of running them, because it never chose to run them; the spine does. Agent discretion exists *only* in Stage-4 specialist selection, and there the failure mode is bounded: at worst the agent skips a specialist, which can only *lose* an escalation signal, never *manufacture* a downgrade. Combined with §4.3 (LLM escalates only) and §3.3 (memory informs, never overrides), all three of depaudit's LLM/agent input channels share one invariant: **they can raise severity but never lower it.**
 
-### 2.6 Shared State (blackboard)
-A single typed LangGraph state object threads through every node: `Dependency[]`, per-dimension signals collected so far, evidence log, escalation flags, and live LLM-call count (for §5.3). It is the **sole** inter-node channel — no direct agent-to-agent messaging, no side channels. Parallel specialists write into it via **LangGraph channel reducers** (Annotated reducer functions), so out-of-order completion of fan-out nodes merges deterministically at fan-in rather than racing. (See §9 for the open question on reducer semantics for conflicting escalations.)
+### 2.6 Shared State (blackboard) *(implemented: `graph/state.py`)*
+A single typed LangGraph state object (`AuditState`, Pydantic) threads through every node: `Dependency[]`, accumulated `Signal[]`, per-dep escalation map, live LLM-call count (for §5.3), and degraded notes. It is the **sole** inter-node channel — no direct agent-to-agent messaging, no side channels. Parallel specialists write via **Annotated channel reducers** so out-of-order fan-in merges deterministically:
+- `signals` → **additive + dedup** by `(dep_key, source, dimension)`, making auto-repair retries idempotent (no double-count).
+- `escalations` → **max-wins** per dep: conflicting tiers resolve to the higher one (weakest-link, escalate-only). *This resolves the former §9 open question.*
+- `llm_calls` → **sum of per-node deltas**; nodes return only the calls they made (`increment_llm_calls`), never an absolute total — a naive overwrite would drop a parallel branch's count and defeat the §5.3 cap.
+- `gate_decision` → **write-once**, `report_agent` only (§2.4).
+
+State is Pydantic per this doc; if a pinned LangGraph predates reliable Pydantic-state support, swap `AuditState` for a `TypedDict` with the same Annotated fields — reducers and value models are unchanged.
 
 ### 2.7 Harness Layer
 - **Constraint validator** (wraps every LLM node): validates output against §4.2 before it reaches shared state; malformed output is retried, not accepted.
@@ -171,52 +196,49 @@ Unchanged v1 §6.1 targets; CI run target remains under 5 minutes; Stage-4 trigg
 Redis-backed distributed semaphores per external host, replacing v1 local semaphores, so concurrent audits and queries share one global rate budget. Exponential backoff with bounded retries; configurable API-token pools for rotation (v1 §6.2).
 
 ### 5.3 LLM Call Cap
-Hard per-run ceiling tracked in shared state (§2.6), enforced by the constraint validator. On breach mid-run, remaining specialists route to a degrade path and the report is marked "incomplete analysis" — a graph-level routing decision, not a silent truncation (v1 §6.3).
+Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is in place (`AuditState.llm_calls` via the `sum_deltas` reducer, plus `would_exceed_cap()`); nodes check before spending and report their delta after. On breach mid-run, remaining specialists route to a degrade path and the report is marked "incomplete analysis" — a graph-level routing decision, not a silent truncation (v1 §6.3). The concrete cap value is still TBD (§9).
 
 ---
 
 ## 6. Project Structure (Enforced)
 
+The v1 Stages 0–3 already live under `tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is a new top-level `graph/`. Legend: ✅ built · ⛔ pending.
+
 ```
 depaudit/
-├── entrypoints/                  # thin adapters; both call graph.run()
-│   ├── api.py                    # FastAPI app (audit + query routes, webhook)
-│   └── cli.py                    # legacy one-shot CLI
-├── graph/                        # LangGraph orchestration (the scheduler)
-│   ├── state.py                  # shared Pydantic state + channel reducers (§2.6)
-│   ├── router.py                 # scope split only (§2.2-A)
-│   ├── single_agent.py           # single-package ReAct path
-│   ├── spine.py                  # fixed Stage 0→1→2→3 sequence + post-gate fan-out (§2.2-B)
-│   ├── specialists/
-│   │   ├── identity_agent.py
-│   │   ├── behavior_agent.py
-│   │   └── provenance_agent.py   # (no popularity/vulnerability agent — §2.3)
-│   ├── report_agent.py           # terminal reducer == scorer, sole decision writer (§2.4)
-│   └── harness/
-│       ├── constraint_validator.py
-│       ├── auto_repair.py
-│       └── session_manager.py
-├── tools/                        # Stages 0–3 frozen, wrapped; LLM-free
-│   ├── discovery_tool.py
-│   ├── parse_normalize_tool.py
-│   ├── hash_verify_tool.py
-│   ├── cheap_signals_tool.py
-│   └── deep_analysis_tool.py     # Stage-4 primitives the specialists call
-├── memory/
-│   ├── short_term.py             # Redis: checkpointer + semaphores + hot cache
-│   └── long_term.py              # PGVector: embed + retrieve
-├── core/                         # unchanged v1 pipeline internals (called by tools/)
-├── ecosystems/                   # unchanged plugin adapters
-├── signals/                      # unchanged static signal collectors
-└── reporter/                     # SARIF / Markdown / JSON (unchanged)
+├── tools/                            # Stages 0–4, deterministic, LLM-free
+│   ├── index/                        # ✅ Stages 0–1
+│   │   ├── core/                     #    discovery.py, normalizer.py, models.py (→ Dependency)
+│   │   ├── cli/
+│   │   └── ecosystems/               #    base.py + go|java|javascript|python|rust adapters+parsers
+│   ├── scan/                         # ✅ Stages 2–3
+│   │   ├── cli/
+│   │   └── signals/                  #    base, collector, github, registry_meta, models
+│   │       └── behavior|identity|popularity|provenance|vulnerability/   # static collectors
+│   └── deep_analysis_tool.py         # ✅ Stage 4 (evidence only, no LLM, no verdict)
+│                                     #    clone/diff/extract primitives the specialists call
+├── graph/                            # agent layer (the scheduler)
+│   ├── state.py                      # ✅ AuditState + channel reducers (§2.6)
+│   ├── router.py                     # ✅ scope split only (§2.2-A)
+│   ├── spine.py                      # ⛔ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B)
+│   ├── single_agent.py               # ⛔ single-package path
+│   ├── specialists/                  # ⛔ identity_agent.py, behavior_agent.py, provenance_agent.py
+│   │                                 #    (no popularity/vulnerability agent — §2.3)
+│   ├── report_agent.py               # ⛔ terminal reducer == scorer, sole decision writer (§2.4)
+│   └── harness/                      # ⛔ constraint_validator.py, auto_repair.py, session_manager.py
+├── memory/                           # ⛔ short_term.py (Redis), long_term.py (PGVector)
+├── entrypoints/                      # ⛔ api.py (FastAPI: audit + query + webhook), cli.py
+└── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
 ```
 
+Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
+
 ### 6.1 Structural Invariants
-1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — v2 form of v1 §5.1.4.
-2. **`tools/` stays LLM-free.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. (`deep_analysis_tool.py` provides deterministic primitives — clone, diff, extract — that specialists call; the *reasoning* lives in the specialist node.)
-3. **Adding an ecosystem still means one adapter under `ecosystems/`**, untouched by the agent layer (v1 §5.1, §13.5).
+1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
+2. **`tools/` stays LLM-free — including `tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
+3. **Adding an ecosystem still means one adapter under `tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
 4. **The graph is the core; `entrypoints/` are thin.** CLI and API both call `graph.run(request)`; neither contains audit logic and the CLI does not shell out to the HTTP server.
-5. **v1 layering preserved:** `signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `ecosystems/`; adapters never judge (v1 §5.1.1–.2).
+5. **v1 layering preserved:** `tools/scan/signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 
 ---
 
@@ -251,14 +273,18 @@ depaudit/
 
 ## 9. Confirmed but Unimplemented
 
-- [ ] Entry-router scope heuristic — rule-based first pass vs. LLM-assisted (must stay risk-independent, §2.2-A)
-- [ ] Channel-reducer semantics when two specialists escalate the same dependency to conflicting tiers (max-wins is the presumed answer, per weakest-link §3.3 — confirm)
+Resolved since v2.1:
+- [x] Entry-router scope heuristic — shipped rule-based and risk-independent (§2.2-A, `graph/router.py`).
+- [x] Channel-reducer semantics for conflicting escalations — **max-wins** confirmed and implemented (§2.6, `graph/state.py`).
+
+Still open:
+- [ ] Post-Stage-3 gate thresholds — what cheap-signal score puts a dep in the gray zone and which specialist(s) it fans out to (`graph/spine.py`, §2.2-B)
+- [ ] Concrete hard cap value for LLM calls per run — mechanism exists (`sum_deltas` + `would_exceed_cap`), value TBD (§5.3)
 - [ ] LangGraph Redis checkpointer schema: keying, TTL, eviction
 - [ ] PGVector embedding model + dimensionality; similarity threshold for "behaviorally similar package"
 - [ ] Auth model for the `query` route (new attack surface)
 - [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination
 - [ ] Prompt-injection defense for specialists (carried from v1)
-- [ ] Concrete hard cap value for LLM calls per run (carried from v1)
 - [ ] Monorepo / multi-config-file support (carried from v1)
 - [ ] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1)
 

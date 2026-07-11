@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
+    "pydantic>=2",     # canonical Dependency model + typed graph state
     "pyyaml>=6",       # pnpm-lock.yaml parsing (Stage 1)
     "aiohttp>=3.9",    # async HTTP for Stage 2 hash verification
 ]
