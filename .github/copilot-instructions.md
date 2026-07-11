@@ -1,6 +1,6 @@
 # CLAUDE.md — depaudit Project Development Rules (v2.2: Agent Architecture)
 
-> **v2.2 (progress sync).** First agent-layer code has landed: the Stage-4 evidence tool (`tools/deep_analysis_tool.py`), the shared state with channel reducers (`graph/state.py`), and the scope-only entry router (`graph/router.py`). Two §9 open questions are now resolved (max-wins reducer; rule-based risk-independent router). Structure diagram in §6 updated to the real tree. See §0.1 for the build status matrix.
+> **v2.2 (progress sync).** First agent-layer code has landed: the Stage-4 evidence tool (`tools/deep_analysis_tool.py`), the shared state with channel reducers (`graph/state.py`), the scope-only entry router (`graph/router.py`), and the deterministic spine + post-Stage-3 gate (`graph/spine.py`). Two §9 open questions are now resolved (max-wins reducer; rule-based risk-independent router). Structure diagram in §6 updated to the real tree. See §0.1 for the build status matrix.
 
 This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **depaudit** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
 
@@ -31,7 +31,7 @@ The single most important thing to understand before reading further: **the agen
 | Stage-4 evidence primitives | `tools/deep_analysis_tool.py` | ✅ implemented, unit-tested |
 | Shared state + channel reducers | `graph/state.py` | ✅ implemented, unit-tested |
 | Entry router (scope only) | `graph/router.py` | ✅ implemented, unit-tested |
-| Deterministic spine (Stage 0→3 + gate) | `graph/spine.py` | ⛔ not started |
+| Deterministic spine (Stage 0→3 + gate) | `graph/spine.py` | ✅ implemented, unit-tested |
 | Stage-4 specialists (Identity/Behavior/Provenance) | `graph/specialists/` | ⛔ not started |
 | Scorer / report_agent | `graph/report_agent.py` | ⛔ not started |
 | Harness (validator / auto-repair / session) | `graph/harness/` | ⛔ not started |
@@ -220,7 +220,7 @@ depaudit/
 ├── graph/                            # agent layer (the scheduler)
 │   ├── state.py                      # ✅ AuditState + channel reducers (§2.6)
 │   ├── router.py                     # ✅ scope split only (§2.2-A)
-│   ├── spine.py                      # ⛔ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B)
+│   ├── spine.py                      # ✅ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B)
 │   ├── single_agent.py               # ⛔ single-package path
 │   ├── specialists/                  # ⛔ identity_agent.py, behavior_agent.py, provenance_agent.py
 │   │                                 #    (no popularity/vulnerability agent — §2.3)
@@ -278,7 +278,7 @@ Resolved since v2.1:
 - [x] Channel-reducer semantics for conflicting escalations — **max-wins** confirmed and implemented (§2.6, `graph/state.py`).
 
 Still open:
-- [ ] Post-Stage-3 gate thresholds — what cheap-signal score puts a dep in the gray zone and which specialist(s) it fans out to (`graph/spine.py`, §2.2-B)
+- [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
 - [ ] Concrete hard cap value for LLM calls per run — mechanism exists (`sum_deltas` + `would_exceed_cap`), value TBD (§5.3)
 - [ ] LangGraph Redis checkpointer schema: keying, TTL, eviction
 - [ ] PGVector embedding model + dimensionality; similarity threshold for "behaviorally similar package"
