@@ -29,7 +29,7 @@ Key boundaries honoured:
   - Every stage degrades independently and never crashes the run (§8.5).
 
 The gate core is `plan_gate()`, a pure function unit-tested without LangGraph. The
-single-agent path (one package) can reuse it verbatim. `gate_edge()` is the thin
+single-package path (one package) reuses it verbatim. `gate_edge()` is the thin
 LangGraph `Send` adapter around it.
 """
 
@@ -319,7 +319,7 @@ def _dimension_severity(signals: list[Signal], key: str) -> dict[TrustDimension,
 def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePlan:
     """Deterministic gate. For each dep: record its overall static severity, and fan
     out to a specialist for each LLM-capable dimension sitting in the gray band
-    [gray_floor, decided_ceiling). Reusable by the single-agent path.
+    [gray_floor, decided_ceiling). Reusable by the single-package path.
 
     Escalate-only holds: the gate can raise a dep into Stage 4 but never clears a
     signal, and a dep it declines to escalate still carries its full static severity

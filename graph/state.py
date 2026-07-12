@@ -91,8 +91,10 @@ class RunScope(str, Enum):
 
 
 class RoutePath(str, Enum):
-    SINGLE_AGENT = "single_agent"
-    FULL_SPINE = "full_spine"
+    # Both paths share the deterministic spine; they differ only at the ENTRY node
+    # (ingestion), never in the analysis (§2.2-A).
+    SINGLE_PACKAGE = "single_package"  # entry: resolve_single_package → spine @ hash_verify
+    FULL_SPINE = "full_spine"          # entry: index (discover+parse) → spine
 
 
 class NodeStatus(str, Enum):
@@ -258,6 +260,7 @@ class AuditState(BaseModel):
     scope: RunScope = RunScope.FULL_REPO
     path: RoutePath = RoutePath.FULL_SPINE
     target: str = ""
+    ecosystem: Optional[str] = None  # optional ingestion hint for a single-package spec
 
     # --- established by the deterministic spine, then fixed ---
     dependencies: Annotated[list[Dependency], replace_if_present] = Field(default_factory=list)

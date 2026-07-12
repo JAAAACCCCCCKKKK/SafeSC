@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from graph.router import (
-    NODE_SINGLE_AGENT,
-    NODE_SPINE,
+    NODE_FULL_SPINE_ENTRY,
+    NODE_SINGLE_PACKAGE_ENTRY,
     AuditRequest,
     classify_scope,
     route,
@@ -99,10 +99,10 @@ def test_classify_scope_never_reads_risk_signals():
 # route() — scope→path and mode→gate
 # --------------------------------------------------------------------------- #
 
-def test_route_single_package_goes_single_agent():
+def test_route_single_package_goes_single_package_entry():
     d = route(_req("requests", mode=RunMode.QUERY))
     assert d.scope is RunScope.SINGLE_PACKAGE
-    assert d.path is RoutePath.SINGLE_AGENT
+    assert d.path is RoutePath.SINGLE_PACKAGE
     assert d.produces_gate is False
 
 
@@ -131,9 +131,18 @@ def test_route_reason_is_populated():
 def test_router_node_writes_scope_and_path():
     state = AuditState(mode=RunMode.QUERY, target="requests")
     out = router_node(state)
-    assert out == {"scope": RunScope.SINGLE_PACKAGE, "path": RoutePath.SINGLE_AGENT}
+    assert out == {"scope": RunScope.SINGLE_PACKAGE, "path": RoutePath.SINGLE_PACKAGE}
 
 
-def test_route_condition_selects_node_by_path():
-    assert route_condition(AuditState(path=RoutePath.SINGLE_AGENT)) == NODE_SINGLE_AGENT
-    assert route_condition(AuditState(path=RoutePath.FULL_SPINE)) == NODE_SPINE
+def test_route_condition_selects_entry_node_by_path():
+    assert route_condition(AuditState(path=RoutePath.SINGLE_PACKAGE)) == NODE_SINGLE_PACKAGE_ENTRY
+    assert route_condition(AuditState(path=RoutePath.FULL_SPINE)) == NODE_FULL_SPINE_ENTRY
+
+
+def test_entry_nodes_match_real_graph_nodes():
+    # route_condition must return the actual spine/entry node names, not placeholders.
+    from graph.single_agent import NODE_RESOLVE_SINGLE
+    from graph.spine import NODE_INDEX
+
+    assert NODE_SINGLE_PACKAGE_ENTRY == NODE_RESOLVE_SINGLE
+    assert NODE_FULL_SPINE_ENTRY == NODE_INDEX

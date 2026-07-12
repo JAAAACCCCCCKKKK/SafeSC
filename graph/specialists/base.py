@@ -100,7 +100,7 @@ def _fmt_items(label: str, items: Iterable) -> str:
 
 def _coerce_task(payload) -> SpecialistTask:
     """A fan-out `Send` delivers {'task': <SpecialistTask dict>}; the sequential
-    single-agent path may pass a SpecialistTask directly."""
+    single-package path may pass a SpecialistTask directly."""
     if isinstance(payload, SpecialistTask):
         return payload
     raw = payload.get("task") if isinstance(payload, dict) else getattr(payload, "task", None)
@@ -119,7 +119,7 @@ def run_specialist(
     deps: SpecialistDeps,
 ) -> dict:
     """Execute one specialist over one dependency. Returns a partial-state dict to be
-    merged via the AuditState reducers. Reused verbatim by the single-agent path."""
+    merged via the AuditState reducers. Reused verbatim by the single-package path."""
     key = task.dep_key
     node = SPECIALIST_NODE[dimension]
     gather = deps.gather_evidence or _default_gather

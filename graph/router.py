@@ -10,8 +10,11 @@ which decides *which suspicious deps get LLM specialists*. Scope is a routing co
 and lives here; risk is a scorer concern and lives there. Keeping them apart is the
 whole reason the v2 design is coherent (principle #3).
 
-    single package / direct lookup  -> SINGLE_AGENT path
-    full repository / lockfile set   -> FULL_SPINE path
+    single package / direct lookup  -> single-package entry node (resolve_single_package)
+    full repository / lockfile set   -> full-spine entry node (index)
+
+Both entry nodes converge on the SAME shared spine at hash_verify — the router only
+chooses the ingestion node, never a distinct analysis subgraph (§2.2-A).
 
 Mode (audit vs query) is orthogonal to scope: it only decides whether the run
 produces a CI gate + exit code. A query over a whole repo is allowed (read-only,
@@ -26,11 +29,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from graph.single_agent import NODE_RESOLVE_SINGLE
+from graph.spine import NODE_INDEX
 from graph.state import RunMode, RunScope, RoutePath
 
-# Node names used when wiring the graph's conditional edges.
-NODE_SINGLE_AGENT = "single_agent"
-NODE_SPINE = "spine"
+# The two entry nodes the router chooses between (each defined by its own module, so the
+# conditional edge always lands on a real node). Both feed the shared spine.
+NODE_SINGLE_PACKAGE_ENTRY = NODE_RESOLVE_SINGLE  # single-package ingestion
+NODE_FULL_SPINE_ENTRY = NODE_INDEX               # full-repo ingestion (discover + parse)
 
 
 # =============================================================================
@@ -123,7 +129,7 @@ def classify_scope(req: AuditRequest) -> RunScope:
 
 def route(req: AuditRequest) -> RouteDecision:
     scope = classify_scope(req)
-    path = RoutePath.SINGLE_AGENT if scope == RunScope.SINGLE_PACKAGE else RoutePath.FULL_SPINE
+    path = RoutePath.SINGLE_PACKAGE if scope == RunScope.SINGLE_PACKAGE else RoutePath.FULL_SPINE
     produces_gate = req.mode == RunMode.AUDIT  # only audits gate CI (§1.3)
     reason = (
         f"scope={scope.value} (from {'override' if req.scope_override else 'structure'}); "
@@ -146,4 +152,4 @@ def router_node(state) -> dict:
 
 def route_condition(state) -> str:
     """Conditional-edge selector: returns the next node name based on scope only."""
-    return NODE_SINGLE_AGENT if state.path == RoutePath.SINGLE_AGENT else NODE_SPINE
+    return NODE_SINGLE_PACKAGE_ENTRY if state.path == RoutePath.SINGLE_PACKAGE else NODE_FULL_SPINE_ENTRY
