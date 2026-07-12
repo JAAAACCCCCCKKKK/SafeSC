@@ -22,8 +22,11 @@ the summary rather than being allowed to look like a clean pass.
 
 from __future__ import annotations
 
+import functools
+
 from pydantic import BaseModel
 
+from graph.spine import NODE_REPORT
 from graph.state import (
     AuditState,
     GateDecision,
@@ -128,3 +131,14 @@ def report_node(state: AuditState, config: ScoreConfig | None = None, memory=Non
 
             logging.getLogger("depaudit.report").warning("memory persist failed", exc_info=True)
     return {"gate_decision": decision}
+
+
+def add_report(builder, config: ScoreConfig | None = None, memory=None) -> str:
+    """Register the terminal scorer node under ``NODE_REPORT`` and return its name.
+
+    Mirrors ``spine.add_spine`` / ``specialists.add_specialists``: the report module
+    owns its own node so graph assembly stays declarative. The inbound edges (from the
+    gate and each specialist) and the edge to END are added by their respective owners
+    before compile, so no LangGraph symbol is imported here."""
+    builder.add_node(NODE_REPORT, functools.partial(report_node, config=config, memory=memory))
+    return NODE_REPORT

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from graph.state import (
     LLMOutput,
@@ -20,6 +20,9 @@ from graph.state import (
     emit_degraded,
 )
 from graph.spine import SPECIALIST_NODE, SpecialistTask
+
+if TYPE_CHECKING:
+    from graph.harness.constraint_validator import ConstraintValidator
 
 logger = logging.getLogger("depaudit.specialist")
 
@@ -39,6 +42,7 @@ class SpecialistDeps:
     gather_evidence: Optional[EvidenceGatherer] = None      # defaults to the real Stage-4 tool
     memory_lookup: Optional[Callable[[str], list[str]]] = None  # PGVector few-shot (§3.2), optional
     artifact_download: Optional[Callable] = None            # for provenance artifact-vs-source
+    validator: Optional["ConstraintValidator"] = None       # inner §2.7.1 wrapper; direct call if None
 
 
 # =============================================================================
@@ -128,19 +132,32 @@ def run_specialist(
     # 3. prompt
     user_prompt = _build_user_prompt(task, serialize(evidence), memory_ctx)
 
-    # 4. one LLM call
-    try:
-        raw = deps.llm(system_prompt, user_prompt)
-        out = raw if isinstance(raw, LLMOutput) else LLMOutput.model_validate(raw)
-    except Exception as exc:
-        logger.exception("llm call/parse failed")
-        # the call was attempted → count it; no signal → dep keeps its static severity
-        return {**emit_degraded(node, f"llm failed for {key}: {exc}"), "llm_calls": 1}
+    # 4. one LLM call — through the inner constraint validator when present (§2.7.1),
+    #    else a direct call (the path unit tests exercise without the harness)
+    calls = 1
+    if deps.validator is not None:
+        res = deps.validator.obtain(
+            deps.llm, system_prompt, user_prompt,
+            evidence=evidence, dimension=dimension, dep_key=key, baseline=task.trigger_severity,
+        )
+        calls = res.calls
+        if not res.ok:  # schema/evidence-ref exhausted → dimension unanalysed, static severity kept
+            return {**emit_degraded(node, f"constraint validation failed for {key}: {res.reason}"),
+                    "llm_calls": calls}
+        out = res.output
+    else:
+        try:
+            raw = deps.llm(system_prompt, user_prompt)
+            out = raw if isinstance(raw, LLMOutput) else LLMOutput.model_validate(raw)
+        except Exception as exc:
+            logger.exception("llm call/parse failed")
+            # the call was attempted → count it; no signal → dep keeps its static severity
+            return {**emit_degraded(node, f"llm failed for {key}: {exc}"), "llm_calls": 1}
 
     # 5. map to a Signal via the escalate-only fusion table
     out.task = dimension.value
     sig = Signal.from_llm_output(key, dimension, out)
-    result: dict = {"signals": [sig], "llm_calls": 1}
+    result: dict = {"signals": [sig], "llm_calls": calls}
     if sig.severity > Severity.CLEAN:
         result["escalations"] = {key: sig.severity}
     return result

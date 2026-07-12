@@ -41,9 +41,10 @@ The single most important thing to understand before reading further: **the agen
 | BYOK credentials + LLM client | `credentials.py`, `graph/llm_client.py` | ✅ implemented, unit-tested (§3.5) |
 | Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ✅ implemented, unit-tested (§2.7) |
 | Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
+| Graph assembly + `run()` seam | `graph/build.py` | ✅ implemented, unit-tested (§6.1.4) |
 | Memory stores (live Redis + PGVector deployment) | `memory/` | ⛔ store wiring pending; MemoryManager consumes them via injection |
 | Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
-| FastAPI entrypoints | `entrypoints/` | ⛔ not started |
+| Entrypoints (FastAPI `api.py` + `cli.py`) | `entrypoints/` | ✅ implemented (api unit-tested via `run()` seam) |
 
 Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
 
@@ -286,11 +287,12 @@ depaudit/
 │   │                                 #    (no popularity/vulnerability agent — §2.3)
 │   ├── llm_client.py                 # ✅ concrete BYOK Claude client (§3.5)
 │   ├── report_agent.py               # ✅ terminal reducer == scorer, sole decision writer (§2.4)
+│   ├── build.py                      # ✅ graph assembly + run() seam both entrypoints call (§6.1.4)
 │   └── harness/                      # ✅ constraint_validator.py, auto_repair.py,
 │                                     #    session_manager.py, memory_manager.py (§2.7)
 ├── memory/                           # ◑ embedding_client.py (BYOK seam, §3.2/§3.5) built;
 │                                     #    short_term.py (Redis) + long_term.py (PGVector) stores ⛔
-├── entrypoints/                      # ⛔ api.py (FastAPI: audit + query + webhook),
+├── entrypoints/                      # ✅ api.py (FastAPI: audit + query + webhook),
 │                                     #    cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
 ├── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
 └── credentials.py                    # ✅ BYOK credentials for LLM + embedding services (§3.5)
@@ -302,7 +304,7 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
 2. **`tools/` stays LLM-free — including `tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
 3. **Adding an ecosystem still means one adapter under `tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
-4. **The graph is the core; `entrypoints/` are thin.** CLI and API both call `graph.run(request)`; neither contains audit logic and the CLI does not shell out to the HTTP server.
+4. **The graph is the core; `entrypoints/` are thin.** CLI and API both call `graph.build.run(request)`; neither contains audit logic and the CLI does not shell out to the HTTP server.
 5. **v1 layering preserved:** `tools/scan/signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 6. **Redis and PGVector have exactly one reader/writer: the Memory Manager (§2.7.4).** No node imports a store or embedding client directly; specialists see memory only as an injected read-only `MemoryContext`, and long-term persistence happens at exactly one point (tail of `report_agent`). This is the structural form of the §3.3 escalate-only-memory rule.
 7. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).

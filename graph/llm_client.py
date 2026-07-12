@@ -63,6 +63,7 @@ def build_specialist_deps(
     memory_lookup=None,
     artifact_download=None,
     gather_evidence=None,
+    validator=None,
 ) -> SpecialistDeps:
     """Assemble `SpecialistDeps` with a BYOK Claude client wired in — the single place
     the LLM key crosses into the graph, via injection, never `AuditState`. Call once
@@ -72,4 +73,5 @@ def build_specialist_deps(
         gather_evidence=gather_evidence,
         memory_lookup=memory_lookup,
         artifact_download=artifact_download,
+        validator=validator,
     )
