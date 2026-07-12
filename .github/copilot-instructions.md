@@ -1,4 +1,6 @@
-# CLAUDE.md — depaudit Project Development Rules (v2.4: Agent Architecture)
+# CLAUDE.md — depaudit Project Development Rules (v2.5: Agent Architecture)
+
+> **v2.5 (harness + memory landed).** The four Harness components (§2.7) and the Memory Manager's read/write paths are now **implemented and unit-tested**, moving §2.7 and §3 from design to code: `graph/harness/{constraint_validator,auto_repair,session_manager,memory_manager}.py`. The constraint validator's repair loop is independent of auto-repair (no retry storm); semaphores use the self-healing ZSET-token pattern; memory persists only escalated + high-popularity-benign records with max-wins/anomaly-flagging. The stores themselves (a live Redis/PGVector deployment) and the FastAPI entrypoints remain the last ⛔ items. Builds on v2.4 (BYOK).
 
 > **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; depaudit holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
 
@@ -37,9 +39,10 @@ The single most important thing to understand before reading further: **the agen
 | Stage-4 specialists (Identity/Behavior/Provenance) | `graph/specialists/` | ✅ implemented, unit-tested |
 | Scorer / report_agent | `graph/report_agent.py` | ✅ implemented, unit-tested |
 | BYOK credentials + LLM client | `credentials.py`, `graph/llm_client.py` | ✅ implemented, unit-tested (§3.5) |
-| Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ⛔ designed (§2.7), not started |
-| Memory stores (Redis + PGVector) | `memory/` | ⛔ designed (§3), not started |
-| Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; memory layer that calls it pending |
+| Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ✅ implemented, unit-tested (§2.7) |
+| Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
+| Memory stores (live Redis + PGVector deployment) | `memory/` | ⛔ store wiring pending; MemoryManager consumes them via injection |
+| Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
 | FastAPI entrypoints | `entrypoints/` | ⛔ not started |
 
 Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
@@ -131,25 +134,25 @@ State is Pydantic per this doc; if a pinned LangGraph predates reliable Pydantic
 
 Four cross-cutting wrappers sit between the graph nodes and the outside world. None of them make audit decisions — they enforce the invariants the rest of this doc assumes. All live under `graph/harness/`. **Wrapping order is fixed** — `auto_repair(outer) → constraint_validated(inner)` — so a semantic rejection can never masquerade as an infrastructure fault (see §2.7.2).
 
-#### 2.7.1 Constraint Validator (`constraint_validator.py`)
+#### 2.7.1 Constraint Validator (`constraint_validator.py`) *(implemented)*
 Wraps every LLM node. Two layers, because a prompt constraint is not an enforcement mechanism:
 - **Schema layer** — the §4.2 output is parsed into the `LLMOutput` Pydantic model; missing fields, out-of-range `confidence`, or an illegal `verdict` are rejected before anything reaches shared state.
 - **Semantic layer** — the checks the schema can't express: every `evidence` ref must resolve to a real entry in the run's evidence log (blocks hallucinated citations), and the resulting fused signal is compared against the dimension's current baseline — any attempt to *lower* it is rejected outright. This is §4.3's escalate-only rule enforced in code, not trusted to the model.
 
-Malformed output is retried with a repair prompt carrying the specific violation. This retry counter is **independent** of the auto-repair counter (§2.7.2). On exhaustion the node's contribution is marked `degraded` and a `coverage_gap` note is written, so the scorer *knows a dimension went unanalysed* rather than silently seeing no signal for it.
+Malformed output is retried with a repair prompt carrying the specific violation. This retry counter is **independent** of the auto-repair counter (§2.7.2). On exhaustion the node's contribution is marked `degraded` and a `coverage_gap` note is written, so the scorer *knows a dimension went unanalysed* rather than silently seeing no signal for it. *(Impl: the `coverage_gap` note reuses the `degraded_notes` channel with a `coverage_gap:` prefix; the scorer's existing "escalated dep with no LLM signal" check (§2.4) already treats it as incomplete. Evidence-ref resolution is path-based: a citation naming a file absent from the gathered bundle is rejected; a paraphrase with no path token is allowed. The escalate-only semantic check is defense-in-depth — under additive+max-wins (§2.6) a clean LLM verdict never lowers a dimension, so the check only fires if that reducer invariant is ever broken.)*
 
-#### 2.7.2 Auto-repair (`auto_repair.py`)
+#### 2.7.2 Auto-repair (`auto_repair.py`) *(implemented)*
 Wraps the deterministic spine tools, the `deep_analysis_tool.py` primitives, and the *outer* (infrastructure) boundary of LLM nodes. Handles **transient** faults only — timeouts, rate-limit responses, connection resets — with bounded retry + exponential backoff and jitter (v1 §6.2).
 
 The division of labour with §2.7.1 is the load-bearing detail: the inner constraint-validated wrapper, on exhaustion, **returns a `degraded` result rather than raising**. So auto-repair never sees a semantic failure and never retries one — otherwise the two layers' retry budgets multiply into a retry storm. On its *own* exhaustion, auto-repair marks the node `degraded` and the run continues (§8, graceful degradation).
 
-#### 2.7.3 Session Manager (`session_manager.py`)
+#### 2.7.3 Session Manager (`session_manager.py`) *(implemented)*
 - Assigns each run a **ULID** `run_id` — lexicographically sortable, so Redis and PGVector keys range-query and GC by time without a separate index.
 - Holds the §5.2 distributed semaphores as a Redis **ZSET token** pattern, not a raw INCR/DECR counter: acquire = `ZADD run_id→expiry_ts`; the live holder count is `ZCARD` taken *after* a `ZREMRANGEBYSCORE` sweep of expired tokens. This self-heals when a worker dies mid-run — a leaked slot ages out on its own instead of pinning the semaphore for every later run.
 - Two semaphore classes: `sem:llm_budget:{run_id}` (a hard cross-branch cap that backstops the §5.3 `sum_deltas` counter — the reducer does the in-graph logic, the semaphore stops parallel branches racing past the ceiling) and `sem:fanout_width:{run_id}` (caps concurrent specialist fan-out so one large repo can't open dozens of simultaneous LLM connections and trip external rate limits).
 - Release runs in a `finally`; a key TTL slightly longer than the worst-case run time is the backstop if release itself fails.
 
-#### 2.7.4 Memory Manager (`memory_manager.py`) — new
+#### 2.7.4 Memory Manager (`memory_manager.py`) *(implemented)*
 The stores in §3 *hold* memory; this component is the **only** code allowed to read or write them, so the §3.3 safety boundary is enforced in one place instead of being re-litigated inside three specialists.
 
 **Read path** — a decorator peer to `constraint_validated`, run before a specialist executes:
@@ -259,7 +262,7 @@ Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is 
 
 ## 6. Project Structure (Enforced)
 
-The v1 Stages 0–3 already live under `tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is a new top-level `graph/`. Legend: ✅ built · ⛔ pending.
+The v1 Stages 0–3 already live under `tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is a new top-level `graph/`. Legend: ✅ built · ◑ partial (seam built, backing store pending) · ⛔ pending.
 
 ```
 depaudit/
@@ -277,17 +280,20 @@ depaudit/
 ├── graph/                            # agent layer (the scheduler)
 │   ├── state.py                      # ✅ AuditState + channel reducers (§2.6)
 │   ├── router.py                     # ✅ scope split only (§2.2-A)
+│   ├── single_pkg.py                 # ✅ single-package entry node → shared spine (§2.2-A)
 │   ├── spine.py                      # ✅ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B)
 │   ├── specialists/                  # ✅ base.py + identity_agent.py, behavior_agent.py, provenance_agent.py
 │   │                                 #    (no popularity/vulnerability agent — §2.3)
+│   ├── llm_client.py                 # ✅ concrete BYOK Claude client (§3.5)
 │   ├── report_agent.py               # ✅ terminal reducer == scorer, sole decision writer (§2.4)
-│   └── harness/                      # ⛔ constraint_validator.py, auto_repair.py,
+│   └── harness/                      # ✅ constraint_validator.py, auto_repair.py,
 │                                     #    session_manager.py, memory_manager.py (§2.7)
-├── memory/                           # ⛔ short_term.py (Redis), long_term.py (PGVector),
-│                                     #    embedding_client.py (external provider, §3.2)
+├── memory/                           # ◑ embedding_client.py (BYOK seam, §3.2/§3.5) built;
+│                                     #    short_term.py (Redis) + long_term.py (PGVector) stores ⛔
 ├── entrypoints/                      # ⛔ api.py (FastAPI: audit + query + webhook),
 │                                     #    cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
-└── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
+├── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
+└── credentials.py                    # ✅ BYOK credentials for LLM + embedding services (§3.5)
 ```
 
 Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
@@ -349,10 +355,14 @@ Resolved at design level in v2.3 (specified, not yet coded):
 Resolved in v2.4 (coded):
 - [x] Credentials model — **BYOK** for all hosted-model services (`credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`, §3.5); keys are `SecretStr`, injected, never in `AuditState`/logs/PGVector, no ambient fallback.
 
+Resolved in v2.5 (coded):
+- [x] Harness Layer — all four components implemented and unit-tested (§2.7): constraint validator (schema+semantic, independent repair loop), auto-repair (transient-only, no retry storm), session manager (ULID + self-healing ZSET semaphores), memory manager (§2.7.4).
+- [x] Memory read/write paths — implemented (`graph/harness/memory_manager.py`): immutable `MemoryContext` (prompt-only), single write at `report_agent` tail, max-wins + severity-decrease anomaly flagging, narrow write scope.
+
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
 - [ ] Concrete hard cap *value* for LLM calls per run — mechanism and enforcement have shipped (`sum_deltas` + `would_exceed_cap`, enforced deterministically in `plan_gate`, §5.3); only the numeric ceiling is TBD
-- [ ] LangGraph Redis checkpointer schema: keying, TTL, eviction
+- [ ] Live store deployment — Redis + PGVector instances, LangGraph checkpointer schema (keying, TTL, eviction), pgvector table + index; the MemoryManager/SessionManager consume them via injection, so this is deployment wiring, not logic
 - [ ] Concrete embedding *model* (e.g. `voyage-3-large` vs a cheaper tier) and the similarity threshold for "behaviourally similar" — the *source* is settled (§3.2); the specific model and cutoff are tuning choices, and the model choice also fixes the PGVector column dimensionality
 - [ ] Auth model for the `query` route (new attack surface)
 - [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination

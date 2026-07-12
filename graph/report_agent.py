@@ -1,17 +1,29 @@
-"""graph/report_agent.py — the scorer / terminal reducer (CLAUDE.md §2.4).
+"""
+graph/report_agent.py — the scorer / terminal reducer (CLAUDE.md §2.4).
 
-The ONLY place a gate decision is computed or written; runs no LLM. Combines every
-signal deterministically (each dep = max severity across its signals, weakest-link) and
-emits one `GateDecision`. Fails an audit only (§1.3); marks degraded runs incomplete.
+This is the ONLY place a gate decision is computed or written. It runs no LLM and has
+no discretion: it reads every signal in state (static from Stages 0–3, LLM from the
+Stage-4 specialists — identical format, §5.1.3), combines them deterministically, and
+emits a single `GateDecision` through the write-once `gate_decision` channel.
+
+Combination rule. Each dep's severity is the maximum severity across all of its
+signals (weakest-link). This is the principled default under an escalate-only system:
+a weighted average could pull a genuine HIGH down toward the mean, which the whole
+architecture forbids — so even if a richer v1 weighting is plugged in here, the max of
+any single dimension is a hard floor the combined score may never fall below.
+
+Gate. The run fails (non-zero exit) when any dep reaches `fail_threshold`, but only in
+`audit` mode — a `query` is evidence-only and never returns a failing exit code (§1.3).
+
+Incompleteness. If the run degraded anywhere (evidence/LLM failures) or the LLM cap was
+hit, the report is marked "incomplete analysis" (§5.3, §8.5); it is surfaced loudly in
+the summary rather than being allowed to look like a clean pass.
 """
 
 from __future__ import annotations
 
-import functools
-
 from pydantic import BaseModel
 
-from graph.spine import NODE_REPORT
 from graph.state import (
     AuditState,
     GateDecision,
@@ -21,13 +33,6 @@ from graph.state import (
     TrustDimension,
     dep_key,
 )
-
-# END is only needed to wire the terminal edge into a real graph; keep the module
-# importable/testable without LangGraph installed.
-try:  # pragma: no cover
-    from langgraph.graph import END  # type: ignore
-except Exception:  # pragma: no cover
-    END = None  # type: ignore
 
 
 class ScoreConfig(BaseModel):
@@ -108,15 +113,18 @@ def score(state: AuditState, config: ScoreConfig | None = None) -> GateDecision:
     )
 
 
-def report_node(state: AuditState, config: ScoreConfig | None = None) -> dict:
-    """Terminal node: the sole writer of `gate_decision` (write-once channel, §2.6)."""
-    return {"gate_decision": score(state, config)}
+def report_node(state: AuditState, config: ScoreConfig | None = None, memory=None) -> dict:
+    """Terminal node: the sole writer of `gate_decision` (write-once channel, §2.6).
 
+    If a Memory Manager is provided, this is also the single long-term write point
+    (§2.7.4): persistence happens here, after the gate decision exists, never mid-run.
+    It is best-effort — a store failure is swallowed so it can never fail the gate."""
+    decision = score(state, config)
+    if memory is not None:
+        try:
+            memory.persist(state, decision)
+        except Exception:  # never let persistence failure change the gate outcome
+            import logging
 
-def add_report(builder, config: ScoreConfig | None = None) -> str:
-    """Add the terminal scorer node under `NODE_REPORT` and mark it the finish point.
-    Complements `spine.add_spine`, whose gate edges route here. Returns the node name."""
-    builder.add_node(NODE_REPORT, functools.partial(report_node, config=config))
-    if END is not None:  # pragma: no cover - requires LangGraph
-        builder.add_edge(NODE_REPORT, END)
-    return NODE_REPORT
+            logging.getLogger("depaudit.report").warning("memory persist failed", exc_info=True)
+    return {"gate_decision": decision}

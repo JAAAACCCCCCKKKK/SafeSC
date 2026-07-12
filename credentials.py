@@ -1,25 +1,9 @@
-"""
-credentials.py — Bring-Your-Own-Key (BYOK) credentials for every hosted-model service.
+"""credentials.py — Bring-Your-Own-Key (BYOK) credentials for hosted-model services (§3.5).
 
-depaudit calls two external model services: the reasoning **LLM** (Claude, used by the
-Stage-4 specialists) and the **embedding** provider (Voyage or compatible, used only by
-the Memory Manager, §2.7.4). Neither key is owned by the depaudit deployment. Each is
-supplied by the *caller* at invocation:
-
-  - API path  (`query`/`audit` over HTTP) — the key arrives in the request (header).
-  - CLI / CI path — the key comes from the *caller's own* environment at run time.
-
-Both assemble the same immutable `UserCredentials` bundle, which is threaded to the
-graph OUT OF BAND — via injected specialist deps and LangGraph `configurable` — and
-NEVER through `AuditState`.
-
-Security invariants (depaudit is a security tool; treat these as load-bearing):
-  1. Keys are `SecretStr`: they never render in reprs, logs, tracebacks, or `model_dump()`.
-  2. Keys never enter `AuditState`, which is checkpointed to Redis (§3.1) — that would
-     persist a user secret. Credentials travel via injection only.
-  3. Keys are never written to PGVector or any report artifact.
-  4. There is no server-side/ambient fallback key: absence of a caller key is an error,
-     not a silent fall-through to a shared account.
+Bundles the caller-supplied reasoning-LLM and embedding keys into an immutable
+`UserCredentials`, threaded to the graph by injection only, never through `AuditState`.
+Invariants: keys are `SecretStr` (never logged/dumped), never persisted to Redis/PGVector,
+and have no ambient fallback — a missing caller key is an error.
 """
 
 from __future__ import annotations
@@ -98,10 +82,8 @@ class UserCredentials(BaseModel):
 
     @classmethod
     def from_env(cls, *, require_embedding: bool = False) -> "UserCredentials":
-        """Build from the *caller's own* environment (CLI/CI path). This is still BYOK:
-        the key belongs to whoever runs depaudit, not to a depaudit-owned account.
-
-        Reads: DEPAUDIT_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
+        """Build from the *caller's own* environment (CLI/CI path) — still BYOK. Reads
+        DEPAUDIT_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
         DEPAUDIT_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
         llm_key = os.environ.get("DEPAUDIT_LLM_API_KEY")
         if not llm_key:

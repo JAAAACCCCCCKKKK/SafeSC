@@ -1,15 +1,8 @@
-"""
-memory/embedding_client.py — the embedding provider seam, built from a user-supplied
-(BYOK) key.
+"""memory/embedding_client.py — the BYOK embedding-provider seam (§3.2, §3.5).
 
-Called ONLY by the Memory Manager (§2.7.4) — never by a specialist or any other node
-(§6.1.6). The provider (Voyage by default; OpenAI/Cohere/Google compatible via
-base_url) and model are configurable; the **key is user-supplied**, matching the LLM's
-BYOK model, and never enters `AuditState` or any persisted artifact.
-
-The memory layer that consumes this is still ⛔ unbuilt (§0.1); this module exists so
-that when the Memory Manager lands, its embedding calls are BYOK from day one rather
-than reaching for a server-side `.env` key.
+Called ONLY by the Memory Manager (§2.7.4), never by a specialist (§6.1.6). Provider
+(Voyage default; OpenAI/Cohere/Google via base_url) and model are configurable; the key
+is user-supplied and never enters `AuditState` or any persisted artifact.
 """
 
 from __future__ import annotations
