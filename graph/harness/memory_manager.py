@@ -162,6 +162,16 @@ class MemoryManager:
                 logger.warning("vector upsert failed for %s: %s", key, exc)
         report.written.append(key)
 
+    # ------------------------------------------------------------------ maintenance
+
+    def gc(self, **kwargs) -> dict:
+        """Differentiated long-term retention (§3.4), invoked only by `depaudit gc` — never
+        by a graph node. Delegated to the vector store so store access stays centralised in
+        this one component (§6.1.6). Redis short-term is TTL-only and needs no sweep."""
+        if self.vector is None or not hasattr(self.vector, "gc"):
+            return {"deleted": 0, "note": "no vector store / TTL-only retention"}
+        return self.vector.gc(**kwargs)
+
     # ------------------------------------------------------------------ store shims
 
     def _redis_get(self, key: str) -> Optional[dict]:

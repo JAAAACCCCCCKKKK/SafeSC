@@ -1,4 +1,6 @@
-# CLAUDE.md — depaudit Project Development Rules (v2.5: Agent Architecture)
+# CLAUDE.md — depaudit Project Development Rules (v2.6: Agent Architecture)
+
+> **v2.6 (stores landed).** The two §3 store clients are now **implemented and unit-tested**: `memory/short_term.py` (`ShortTermStore` — the injectable Redis seam serving the hot cache, the checkpointer factory, and the SessionManager's ZSET ops via one client) and `memory/long_term.py` (`PGVectorStore` — `query_similar`/`upsert`/`get`/`gc` over a plain DB-API connection, vectors written as `::vector` literals, defense-in-depth `GREATEST` max-wins, §3.4 differentiated-retention GC). Both use **lazy imports** so the core stays installable without the new optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-redis); both are consumed by the MemoryManager purely via **injection** (§6.1.6). `MemoryManager.gc()` now delegates to the vector store so `depaudit gc` (§3.4) is wired end-to-end. What remains is **deployment**, not code: a live Redis/Postgres instance, a pinned embedding model+dimension, and the similarity cutoff. Builds on v2.5 (harness + memory-manager).
 
 > **v2.5 (harness + memory landed).** The four Harness components (§2.7) and the Memory Manager's read/write paths are now **implemented and unit-tested**, moving §2.7 and §3 from design to code: `graph/harness/{constraint_validator,auto_repair,session_manager,memory_manager}.py`. The constraint validator's repair loop is independent of auto-repair (no retry storm); semaphores use the self-healing ZSET-token pattern; memory persists only escalated + high-popularity-benign records with max-wins/anomaly-flagging. The stores themselves (a live Redis/PGVector deployment) and the FastAPI entrypoints remain the last ⛔ items. Builds on v2.4 (BYOK).
 
@@ -42,7 +44,8 @@ The single most important thing to understand before reading further: **the agen
 | Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ✅ implemented, unit-tested (§2.7) |
 | Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
 | Graph assembly + `run()` seam | `graph/build.py` | ✅ implemented, unit-tested (§6.1.4) |
-| Memory stores (live Redis + PGVector deployment) | `memory/` | ⛔ store wiring pending; MemoryManager consumes them via injection |
+| Memory store clients (Redis + PGVector) | `memory/short_term.py`, `memory/long_term.py` | ✅ implemented, unit-tested (§3.1, §3.2); consumed by MemoryManager via injection |
+| Live store deployment (Redis/Postgres instance, checkpointer schema, pgvector index) | infra | ⛔ deployment wiring only, not logic |
 | Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
 | Entrypoints (FastAPI `api.py` + `cli.py`) | `entrypoints/` | ✅ implemented (api unit-tested via `run()` seam) |
 
@@ -170,15 +173,17 @@ The stores in §3 *hold* memory; this component is the **only** code allowed to 
 
 ## 3. Memory System
 
-### 3.1 Short-Term Memory — Redis
-- LangGraph checkpointer backend: mid-run state survives node retries and enables resume.
-- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse on the same repo/branch, TTL 7 days (v1 L2).
+### 3.1 Short-Term Memory — Redis *(implemented: `memory/short_term.py`)*
+- LangGraph checkpointer backend: mid-run state survives node retries and enables resume. `ShortTermStore.checkpointer()` returns a `RedisSaver` bound to the same instance (lazy import).
+- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse on the same repo/branch, TTL 7 days (v1 L2) — `cache_get`/`cache_set` under a `cache:` namespace.
 - Distributed semaphore store (§5.2).
+
+`ShortTermStore` is a thin, injectable wrapper: it exposes the JSON-friendly `get`/`set` the MemoryManager uses and passes the SessionManager's ZSET semaphore primitives (`zadd`/`zremrangebyscore`/`zcard`/`zrem`/`pexpire`) straight through to the wrapped client, so it is *the* single object injected as `redis=` to both consumers — no node imports a raw client (§6.1.6). `from_url` builds the real redis-py client lazily.
 
 Note: within a single graph run, parallel specialists synchronize via LangGraph fan-in (§2.6), **not** via Redis pub/sub. Redis holds state and rate limits; it is not a message bus between nodes.
 
-### 3.2 Long-Term Memory — PGVector
-- Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns).
+### 3.2 Long-Term Memory — PGVector *(implemented: `memory/long_term.py`)*
+- Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns). `PGVectorStore` exposes `query_similar`/`upsert`/`get`/`gc` plus an idempotent `ensure_schema()`; vectors are written as `::vector` literals over a plain DB-API connection (no adapter registration), and `upsert` carries a defense-in-depth `GREATEST(...)` max-wins so a cross-process race on the same immutable hash can't lower a stored severity (§2.7.4). The connection is injected (`connect` factory), so it unit-tests against a fake; `from_dsn` builds the real psycopg one lazily.
 - Used purely as **retrieval context**: before a Stage-4 specialist runs, PGVector is queried for prior or behaviorally-similar findings and those are supplied as few-shot context. This cuts redundant deep analysis (cost) and grounds the LLM in prior evidence.
 - Replaces v1's L3 (S3/Redis team cache). PGVector is now the canonical long-term store; Redis stays hot/short-term only.
 - **Embeddings are produced by an external provider API, not by depaudit.** The LLM provider (Claude) has *no* first-party embeddings endpoint, so the embedding model is a **separate service with a separate, user-supplied key (BYOK, §3.5)**. Base URL and model stay configurable per deployment (`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` may set non-secret defaults), but the **key itself is caller-supplied and never server-stored**. For the Claude stack this defaults to **Voyage AI** (Anthropic's recommended partner); a base URL leaves it provider-swappable (OpenAI / Google / Cohere) with no code change. The wrapper lives in `memory/embedding_client.py` and is called *only* by the Memory Manager (§2.7.4). Vector **dimensionality follows from the chosen model and fixes the PGVector column width**, so it must be pinned per deployment — changing embedding model means a re-index, not a hot swap.
@@ -290,8 +295,10 @@ depaudit/
 │   ├── build.py                      # ✅ graph assembly + run() seam both entrypoints call (§6.1.4)
 │   └── harness/                      # ✅ constraint_validator.py, auto_repair.py,
 │                                     #    session_manager.py, memory_manager.py (§2.7)
-├── memory/                           # ◑ embedding_client.py (BYOK seam, §3.2/§3.5) built;
-│                                     #    short_term.py (Redis) + long_term.py (PGVector) stores ⛔
+├── memory/                           # ✅ short_term.py (ShortTermStore/Redis, §3.1),
+│                                     #    long_term.py (PGVectorStore, §3.2/§3.4),
+│                                     #    embedding_client.py (BYOK seam, §3.2/§3.5).
+│                                     #    All injected into MemoryManager; live store = infra (⛔)
 ├── entrypoints/                      # ✅ api.py (FastAPI: audit + query + webhook),
 │                                     #    cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
 ├── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
@@ -361,10 +368,13 @@ Resolved in v2.5 (coded):
 - [x] Harness Layer — all four components implemented and unit-tested (§2.7): constraint validator (schema+semantic, independent repair loop), auto-repair (transient-only, no retry storm), session manager (ULID + self-healing ZSET semaphores), memory manager (§2.7.4).
 - [x] Memory read/write paths — implemented (`graph/harness/memory_manager.py`): immutable `MemoryContext` (prompt-only), single write at `report_agent` tail, max-wins + severity-decrease anomaly flagging, narrow write scope.
 
+Resolved in v2.6 (coded):
+- [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `depaudit gc` (§3.4) end-to-end.
+
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
 - [ ] Concrete hard cap *value* for LLM calls per run — mechanism and enforcement have shipped (`sum_deltas` + `would_exceed_cap`, enforced deterministically in `plan_gate`, §5.3); only the numeric ceiling is TBD
-- [ ] Live store deployment — Redis + PGVector instances, LangGraph checkpointer schema (keying, TTL, eviction), pgvector table + index; the MemoryManager/SessionManager consume them via injection, so this is deployment wiring, not logic
+- [ ] Live store deployment — a running Redis + Postgres/PGVector instance, LangGraph checkpointer schema (keying, TTL, eviction), and running `ensure_schema()` for the pgvector table + index. The store *clients* have shipped (§3.1, §3.2); this is the last piece and is deployment wiring, not logic
 - [ ] Concrete embedding *model* (e.g. `voyage-3-large` vs a cheaper tier) and the similarity threshold for "behaviourally similar" — the *source* is settled (§3.2); the specific model and cutoff are tuning choices, and the model choice also fixes the PGVector column dimensionality
 - [ ] Auth model for the `query` route (new attack surface)
 - [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination

@@ -17,6 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+# §3 memory stores — lazily imported, so the core stays installable without these.
+memory = [
+    "redis>=5",                          # short-term store + distributed semaphores (§3.1)
+    "psycopg[binary]>=3",                # PGVector long-term store connection (§3.2)
+    "pgvector>=0.2",                     # vector column type / ops
+    "langgraph-checkpoint-redis>=0.0.1", # LangGraph Redis checkpointer (§3.1)
+]
 
 [project.scripts]
 index = "tools.index.cli.main:main"
