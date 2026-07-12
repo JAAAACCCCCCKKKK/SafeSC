@@ -1,24 +1,8 @@
-"""
-graph/router.py — the entry router (CLAUDE.md §2.2-A).
+"""graph/router.py — the entry router (CLAUDE.md §2.2-A).
 
-This is branch point (A): it splits on request SCOPE, which is known at entry.
-It is deliberately RULE-BASED and RISK-INDEPENDENT — it must not read, compute, or
-depend on any trust signal, because no signals exist yet (Stages 0-3 have not run).
-
-Do NOT confuse this with branch point (B), the post-Stage-3 risk gate in spine.py,
-which decides *which suspicious deps get LLM specialists*. Scope is a routing concern
-and lives here; risk is a scorer concern and lives there. Keeping them apart is the
-whole reason the v2 design is coherent (principle #3).
-
-    single package / direct lookup  -> single-package entry node (resolve_single_package)
-    full repository / lockfile set   -> full-spine entry node (index)
-
-Both entry nodes converge on the SAME shared spine at hash_verify — the router only
-chooses the ingestion node, never a distinct analysis subgraph (§2.2-A).
-
-Mode (audit vs query) is orthogonal to scope: it only decides whether the run
-produces a CI gate + exit code. A query over a whole repo is allowed (read-only,
-FULL_SPINE path, no gate).
+Branch point (A): splits on request SCOPE only (rule-based, risk-independent — no
+signals exist yet). Chooses the ingestion node (single-package vs full-spine); both
+converge on the shared spine at hash_verify. Mode (audit vs query) only decides the gate.
 """
 
 from __future__ import annotations

@@ -1,26 +1,8 @@
-"""
-graph/state.py — the single shared LangGraph state (CLAUDE.md §2.6).
+"""graph/state.py — the single shared LangGraph state (CLAUDE.md §2.6).
 
-This is the SOLE inter-node channel: no agent talks to another agent except by
-reading/writing this object. Parallel Stage-4 specialists fan out and complete
-out of order, so every field that they can write concurrently carries a *channel
-reducer* that merges branch updates deterministically:
-
-    signals         -> additive (concat + dedup); nothing is ever lost
-    escalations     -> MAX-WINS per (dep, dimension); conflicting tiers resolve to
-                       the higher one, honouring the escalate-only / weakest-link
-                       rule (§3.3, §4.3). Resolves the §9 open question.
-    llm_calls       -> SUM of per-node deltas; a naive overwrite would lose the
-                       count of a parallel branch and defeat the §5.3 cap
-    degraded_notes  -> append
-    gate_decision   -> written once, by report_agent only (§2.4)
-
-The reducers are plain functions (LangGraph reads them from the Annotated metadata
-at graph-build time); they are unit-tested directly and need no LangGraph import.
-
-Requires LangGraph >= 0.2 for Pydantic-model state with Annotated reducers. If you
-pin an older version, swap AuditState to a TypedDict with the same Annotated fields;
-the reducers and value models below are unchanged.
+Sole inter-node channel. Concurrently-written fields carry channel reducers so
+out-of-order specialist fan-in merges deterministically (see reducers below).
+Requires LangGraph >= 0.2 for Pydantic state; else use a TypedDict with the same fields.
 """
 
 from __future__ import annotations
@@ -30,10 +12,8 @@ from typing import Annotated, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-# The canonical Dependency lives in tools/index/core/models.py. We soft-import it so
-# graph/ stays importable and testable standalone; the fallback MUST stay field-
-# compatible (name/version/ecosystem/source_url/hash/artifact_url/ref) with the real
-# model, which is the source of truth.
+# Soft-import the canonical Dependency (tools/index/core/models.py) so graph/ stays
+# standalone-testable; the fallback below MUST stay field-compatible with the real model.
 if TYPE_CHECKING:
     from tools.index.core.models import Dependency  # noqa: F401
 else:
@@ -115,13 +95,9 @@ def dep_key(dep: "Dependency | str", *, ecosystem: str = "", name: str = "", ver
 
 
 class Signal(BaseModel):
-    """The unified signal both static collectors and LLM specialists emit.
-
-    Per v1 §5.1.3 static and LLM detections share one format and both feed the
-    scorer. `severity` is this signal's *normalised* contribution; combining
-    contributions across dimensions into the final gate is the scorer's sole job
-    (§2.4). Applying the §4.3 fusion table to normalise one LLM signal is
-    deterministic table lookup, not a verdict.
+    """Unified signal both static collectors and LLM specialists emit (§5.1.3).
+    `severity` is this signal's normalised contribution; combining into the gate is
+    the scorer's job (§2.4). One LLM signal's §4.3 fusion is deterministic table lookup.
     """
 
     dep_key: str
@@ -141,9 +117,7 @@ class Signal(BaseModel):
     @classmethod
     def from_llm_output(cls, dep_key: str, dimension: TrustDimension, out: "LLMOutput") -> "Signal":
         """Map a §4.2 specialist output into a Signal via the §4.3 fusion table.
-
-        Iron rule: this may only *escalate* (produce >= CLEAN); a 'clean' verdict
-        never lowers anything — it maps to CLEAN and contributes nothing.
+        Escalate-only: a 'clean' verdict maps to CLEAN and contributes nothing.
         """
         return cls(
             dep_key=dep_key,
@@ -160,8 +134,7 @@ class Signal(BaseModel):
 
 
 class LLMOutput(BaseModel):
-    """The mandatory structured output every specialist returns (CLAUDE.md §4.2).
-
+    """The mandatory structured output every specialist returns (§4.2).
     The constraint validator rejects anything that does not parse into this."""
 
     task: str
@@ -222,9 +195,8 @@ def merge_signals(current: list[Signal], update: list[Signal]) -> list[Signal]:
 
 
 def max_severity(current: dict[str, Severity], update: dict[str, Severity]) -> dict[str, Severity]:
-    """MAX-WINS. Two specialists escalating the same dep to different tiers resolve
-    to the higher tier — never the lower (escalate-only, §3.3/§4.3). Order-independent,
-    so out-of-order fan-in is safe. Resolves the §9 open question."""
+    """MAX-WINS: conflicting tiers resolve to the higher one (escalate-only, §3.3/§4.3).
+    Order-independent, so out-of-order fan-in is safe."""
     if not update:
         return current
     out = dict(current)
@@ -234,9 +206,8 @@ def max_severity(current: dict[str, Severity], update: dict[str, Severity]) -> d
 
 
 def sum_deltas(current: Optional[int], update: Optional[int]) -> int:
-    """SUM of per-node deltas. Each node returns only the number of LLM calls IT
-    made (see increment_llm_calls); the running total lives in state. A plain
-    overwrite would drop a parallel branch's calls and silently defeat the §5.3 cap."""
+    """SUM of per-node deltas: each node returns only the calls IT made. A plain
+    overwrite would drop a parallel branch's calls and defeat the §5.3 cap."""
     return (current or 0) + (update or 0)
 
 

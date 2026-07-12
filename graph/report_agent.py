@@ -1,23 +1,8 @@
-"""
-graph/report_agent.py — the scorer / terminal reducer (CLAUDE.md §2.4).
+"""graph/report_agent.py — the scorer / terminal reducer (CLAUDE.md §2.4).
 
-This is the ONLY place a gate decision is computed or written. It runs no LLM and has
-no discretion: it reads every signal in state (static from Stages 0–3, LLM from the
-Stage-4 specialists — identical format, §5.1.3), combines them deterministically, and
-emits a single `GateDecision` through the write-once `gate_decision` channel.
-
-Combination rule. Each dep's severity is the maximum severity across all of its
-signals (weakest-link). This is the principled default under an escalate-only system:
-a weighted average could pull a genuine HIGH down toward the mean, which the whole
-architecture forbids — so even if a richer v1 weighting is plugged in here, the max of
-any single dimension is a hard floor the combined score may never fall below.
-
-Gate. The run fails (non-zero exit) when any dep reaches `fail_threshold`, but only in
-`audit` mode — a `query` is evidence-only and never returns a failing exit code (§1.3).
-
-Incompleteness. If the run degraded anywhere (evidence/LLM failures) or the LLM cap was
-hit, the report is marked "incomplete analysis" (§5.3, §8.5); it is surfaced loudly in
-the summary rather than being allowed to look like a clean pass.
+The ONLY place a gate decision is computed or written; runs no LLM. Combines every
+signal deterministically (each dep = max severity across its signals, weakest-link) and
+emits one `GateDecision`. Fails an audit only (§1.3); marks degraded runs incomplete.
 """
 
 from __future__ import annotations
@@ -129,9 +114,8 @@ def report_node(state: AuditState, config: ScoreConfig | None = None) -> dict:
 
 
 def add_report(builder, config: ScoreConfig | None = None) -> str:
-    """Add the terminal scorer node under the spine's `NODE_REPORT` name and mark it
-    the graph's finish point. Complements `spine.add_spine`, whose gate edges already
-    route to this name. Returns the node name for the caller's convenience."""
+    """Add the terminal scorer node under `NODE_REPORT` and mark it the finish point.
+    Complements `spine.add_spine`, whose gate edges route here. Returns the node name."""
     builder.add_node(NODE_REPORT, functools.partial(report_node, config=config))
     if END is not None:  # pragma: no cover - requires LangGraph
         builder.add_edge(NODE_REPORT, END)

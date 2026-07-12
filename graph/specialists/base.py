@@ -1,21 +1,8 @@
-"""
-graph/specialists/base.py — shared machinery for the Stage-4 LLM specialists.
-
-A specialist (§2.3) does exactly three things and nothing else:
-  1. gather deterministic evidence for its dimension from tools/deep_analysis_tool.py,
-  2. reason over that evidence with ONE LLM call, emitting a §4.2 `LLMOutput`,
-  3. map that output through the §4.3 fusion table into a `Signal` (escalate-only).
-
-It never writes the gate decision (§2.4) and never lowers severity: an LLM or
-evidence failure degrades to "no LLM signal", leaving the dep's static severity
-untouched (§8.5). All external dependencies (the LLM client, the evidence gatherer,
-optional PGVector memory, the artifact downloader) are injected so the specialists
-are unit-testable without a live model or network.
-
-Cap note (§5.3): a specialist always spends its one call — it was already selected by
-the gate, which is the deterministic place to enforce the per-run budget (bound the
-number of fan-out `Send`s). Each specialist reports `llm_calls: 1`; the reporter
-flags the run "incomplete" if the total ever exceeded the cap.
+"""graph/specialists/base.py — shared machinery for the Stage-4 LLM specialists.
+A specialist (§2.3) gathers deterministic evidence, reasons over it with ONE LLM call
+(a §4.2 `LLMOutput`), and maps that through the §4.3 fusion table to a `Signal`. It never
+writes the verdict and never lowers severity (§8.5); deps are injected for testability.
+It always spends its one call — the gate (§5.3) owns the per-run budget.
 """
 
 from __future__ import annotations
@@ -37,9 +24,8 @@ from graph.spine import SPECIALIST_NODE, SpecialistTask
 logger = logging.getLogger("depaudit.specialist")
 
 
-# The LLM client contract: (system_prompt, user_prompt) -> a §4.2 LLMOutput.
-# The real implementation wraps the Claude API with a structured-output parser bound
-# to LLMOutput; the harness constraint validator (§2.7) will own retry/repair.
+# LLM client contract: (system_prompt, user_prompt) -> §4.2 LLMOutput. The harness
+# constraint validator (§2.7) owns retry/repair; the real impl wraps the Claude API.
 LLMClient = Callable[[str, str], "LLMOutput | dict"]
 
 # Evidence gatherer contract: (dependency, dimensions, artifact_download) -> evidence

@@ -1,15 +1,8 @@
-"""
-graph/llm_client.py — the concrete `LLMClient` for the Stage-4 specialists, built from
-a user-supplied (BYOK) key.
+"""graph/llm_client.py — the concrete BYOK `LLMClient` for the Stage-4 specialists.
 
-This is the real implementation of the injected seam declared in
-`graph/specialists/base.py` (`LLMClient = (system, user) -> LLMOutput`). Each call is
-made with the *caller's* Anthropic key — there is no shared or ambient key. The client
-object is constructed per `UserCredentials`, so two concurrent requests never share a
-key or an account.
-
-Keeping the key here (in an injected closure) rather than in `AuditState` is what stops
-it from being checkpointed to Redis (§3.1) — see credentials.py invariant #2.
+Real implementation of the injected seam in `graph/specialists/base.py`. Each call uses
+the caller's own Anthropic key (constructed per `UserCredentials`, never shared). Holding
+the key in an injected closure (not `AuditState`) keeps it out of Redis (§3.1).
 """
 
 from __future__ import annotations
@@ -30,9 +23,8 @@ _JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
 
 def parse_llm_output(text: str) -> LLMOutput:
-    """Extract and validate a §4.2 object from a raw model completion. Pure and
-    unit-testable. The harness constraint validator (§2.7.1) owns retry-on-reject;
-    here we just parse strictly."""
+    """Extract and validate a §4.2 object from a raw model completion (pure).
+    The harness constraint validator (§2.7.1) owns retry-on-reject; we just parse."""
     cleaned = _JSON_FENCE.sub("", text).strip()
     # tolerate leading/trailing prose by grabbing the outermost JSON object
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -72,10 +64,9 @@ def build_specialist_deps(
     artifact_download=None,
     gather_evidence=None,
 ) -> SpecialistDeps:
-    """Assemble `SpecialistDeps` with a BYOK Claude client wired in. This is the single
-    place the LLM key crosses into the graph, and it crosses via injection — never via
-    `AuditState`. Call it once per run at the entrypoint, then pass the deps when
-    building the specialist nodes."""
+    """Assemble `SpecialistDeps` with a BYOK Claude client wired in — the single place
+    the LLM key crosses into the graph, via injection, never `AuditState`. Call once
+    per run at the entrypoint, then pass the deps when building specialist nodes."""
     return SpecialistDeps(
         llm=make_claude_llm(creds.llm),
         gather_evidence=gather_evidence,

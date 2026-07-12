@@ -1,9 +1,7 @@
-"""graph/specialists/identity_agent.py — name-squatting + maintainer-handover coercion (§2.3, §4.4).
+"""graph/specialists/identity_agent.py — name-squatting + maintainer-handover (§2.3, §4.4).
 
-The IdentityAgent combines the doc/README evidence gathered here with the maintainer
-signals already in state (collected deterministically by tools/scan/signals/github.py
-and the identity collectors). Those static signals are what put the dep in the gray
-zone (they arrive via task.trigger_sources); this agent reasons about *intent*.
+Combines README/doc evidence gathered here with the static maintainer signals already in
+state (which put the dep in the gray zone via task.trigger_sources); reasons about intent.
 """
 
 from __future__ import annotations

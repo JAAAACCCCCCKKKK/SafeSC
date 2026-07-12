@@ -1,26 +1,8 @@
-"""
-graph/single_agent.py — the single-package ENTRY NODE (CLAUDE.md §2.2-A).
+"""graph/single_pkg.py — the single-package ENTRY NODE (CLAUDE.md §2.2-A).
 
-This is deliberately NOT a separate agent path. A single-package query and a full-repo
-audit share the entire deterministic spine (hash_verify → cheap_signals → gate →
-specialists → report); they differ ONLY at ingestion:
-
-  * full repo  → `spine.index_node` walks the tree to discover + parse lockfiles;
-  * single pkg → the package is already named, so we parse the spec straight into one
-                 `Dependency` and jump into the spine at `hash_verify`.
-
-Everything from hash_verify onward — the gate (`plan_gate`), the specialists
-(`run_specialist`), and the scorer (`score`) — is reused verbatim, because the analysis
-is agnostic to the number of dependencies: one dep flows through the same nodes as five
-hundred.
-
-Keeping this an entry node (not a free-form ReAct loop) is a security property, not
-tidiness. §2.5's whole argument is that Stages 0–3 are a fixed, non-discretionary
-sequence the agent cannot reorder or skip; a ReAct agent choosing its own tool order
-would reopen the very injection vector §2.5 closes. So the single-package case uses the
-same fixed spine and the same gate — only the ingestion step changes. (An exploratory,
-human-in-the-loop research agent that walks transitive deps is a possible future opt-in
-feature, but it lives OUTSIDE this deterministic, CI-gating path.)
+Not a separate agent path: a single-package query parses the spec into one `Dependency`
+and joins the shared spine at hash_verify; everything downstream is reused verbatim.
+Keeping it a fixed entry node (not a ReAct loop) preserves the §2.5 injection defence.
 """
 
 from __future__ import annotations
@@ -76,9 +58,8 @@ def _split_name_version(spec: str) -> tuple[str, str]:
 
 
 def _split_purl_version(body: str) -> tuple[str, str]:
-    """Split a purl body ``type/namespace/name[@version]``. The name may be scoped and
-    thus contain '@' and '/', but the version never contains '/', so we only look for
-    the version '@' in the segment after the last '/'."""
+    """Split a purl body ``type/namespace/name[@version]``. The version never contains
+    '/', so we find the version '@' only in the segment after the last '/'."""
     slash = body.rfind("/")
     at = body.find("@", slash + 1)
     if at != -1:
@@ -111,14 +92,9 @@ def _parse_purl(spec: str) -> Optional[Dependency]:
 
 
 def parse_package_spec(target: str, default_ecosystem: Optional[str] = None) -> Optional[Dependency]:
-    """Turn a package spec into a single `Dependency`, or None if unparseable.
-
-    Accepted forms:
-      * purl                       ``pkg:pypi/requests@2.31.0``, ``pkg:npm/@angular/core@12``
-      * ecosystem-prefixed         ``python:requests@2.31.0``, ``npm:left-pad@1.3.0``
-      * npm scope                  ``@angular/core@12.0.0`` (→ javascript)
-      * bare name[@version]        ``left-pad@1.3.0`` (ecosystem from `default_ecosystem`)
-    """
+    """Turn a package spec into one `Dependency`, or None if unparseable.
+    Accepts purl, ecosystem-prefixed (`python:x@1`), npm scope (`@ng/core@1`),
+    and bare `name[@version]` (ecosystem from `default_ecosystem`)."""
     spec = (target or "").strip()
     if not spec:
         return None
@@ -152,10 +128,8 @@ def parse_package_spec(target: str, default_ecosystem: Optional[str] = None) -> 
 
 
 def resolve_single_package(state) -> dict:
-    """Entry node for the single-package path. Parses `state.target` into one
-    `Dependency` and writes it to `state.dependencies`; the shared spine takes over at
-    `hash_verify`. A spec it cannot parse degrades to an empty dep set with a note,
-    never a crash (§8.5)."""
+    """Entry node: parse `state.target` into one `Dependency` for the shared spine.
+    An unparseable spec degrades to an empty dep set with a note, never a crash (§8.5)."""
     dep = parse_package_spec(state.target, getattr(state, "ecosystem", None))
     if dep is None:
         return {
@@ -166,9 +140,8 @@ def resolve_single_package(state) -> dict:
 
 
 def add_single_package_entry(builder) -> str:
-    """Add the single-package entry node and wire it into the shared spine at
-    hash_verify. Returns the entry node name so the router's single-package branch can
-    point at it. The spine (`spine.add_spine`) and report node are added separately."""
+    """Add the entry node and wire it into the shared spine at hash_verify.
+    Returns the entry node name for the router's single-package branch."""
     builder.add_node(NODE_RESOLVE_SINGLE, resolve_single_package)
     builder.add_edge(NODE_RESOLVE_SINGLE, NODE_HASH_VERIFY)
     return NODE_RESOLVE_SINGLE

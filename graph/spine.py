@@ -1,36 +1,8 @@
-"""
-graph/spine.py — the deterministic spine (CLAUDE.md §2.2-B, §2.5).
-
-Two responsibilities, both LLM-free:
-
-  1. Run Stages 0→1→2→3 as a FIXED, NON-DISCRETIONARY sequence. The agent never
-     chooses whether these run — the spine does. That is the security property in
-     §2.5: an attacker cannot craft metadata that talks the pipeline out of hash
-     verification, because nothing here is agent-driven.
-
-  2. The post-Stage-3 RISK GATE (branch point B). After cheap signals are in, the
-     gate decides, per dependency, (a) whether it is gray-zone enough to warrant
-     Stage-4 LLM analysis, and (b) which specialists it fans out to. The gate only
-     *routes*; it never writes the final verdict (that is report_agent, §2.4).
-
-Key boundaries honoured:
-  - No LLM here. The spine is pre-LLM (§2.1).
-  - Only identity/behavior/provenance can fan out — popularity/vulnerability have no
-    LLM task (§4.4), so a dep suspicious only on those stays deterministic and is
-    NOT sent to a specialist. This is also what keeps the Stage-4 trigger rate in the
-    §5.1 5–10% band; `GateConfig.gray_floor` is the primary tuning lever.
-  - A dimension already at the decided ceiling (e.g. a confirmed hash mismatch =
-    CRITICAL provenance) is recorded but NOT sent to an LLM — the LLM could only
-    escalate, and it is already maxed, so spending the call adds no signal (§5.3).
-  - The LLM-call cap (§5.3) is enforced HERE, deterministically: fan-out candidates
-    are ranked by severity and truncated to the remaining budget before any Send, so
-    the ceiling can't be raced past by parallel specialist branches. Truncated deps
-    keep their static escalation and get a degraded/incomplete note.
-  - Every stage degrades independently and never crashes the run (§8.5).
-
-The gate core is `plan_gate()`, a pure function unit-tested without LangGraph. The
-single-package path (one package) reuses it verbatim. `gate_edge()` is the thin
-LangGraph `Send` adapter around it.
+"""graph/spine.py — the deterministic spine (CLAUDE.md §2.2-B, §2.5).
+Two LLM-free jobs: run Stages 0→3 as a FIXED sequence (the §2.5 injection defence), and
+the post-Stage-3 RISK GATE (branch point B) routing gray-zone deps to specialists without
+writing a verdict. Only identity/behavior/provenance fan out (§4.4); the §5.3 LLM cap is
+enforced here. `plan_gate()` is the pure, LangGraph-free core.
 """
 
 from __future__ import annotations
@@ -101,10 +73,9 @@ class SpecialistTask(BaseModel):
 
 
 class SpineTools(Protocol):
-    """The four Stage 0–3 seams. Wire these to the real implementations in
-    tools/index/ and tools/scan/ (see load_default_tools). Signatures are the §2.1
-    tool contracts; the spine owns sequencing, degradation, and the gate — the tools
-    stay pure and per-dep so the harness can bound their concurrency (§5.1)."""
+    """The four Stage 0–3 seams, wired to tools/index/ and tools/scan/ (see
+    load_default_tools). The spine owns sequencing, degradation, and the gate; the
+    tools stay pure and per-dep so the harness can bound concurrency (§5.1)."""
 
     def discover(self, target: str) -> list[LockfileRef]: ...          # Stage 0
     def parse(self, lockfiles: list[LockfileRef]) -> list[Dependency]: ...  # Stage 1
@@ -123,13 +94,8 @@ class InjectedTools:
     collect_signals: Callable[[Dependency], list[Signal]]
 
 
-# --- adapters: real tool output types -> the unified graph.state.Signal ------
-#
-# The frozen Stage 0-3 code predates the agent layer and speaks its own types:
-# Stage 0 yields `DiscoveredFile`, Stages 2/3 yield `tools.scan.signals.models.Signal`
-# and `HashVerificationResult`. The spine works only in `graph.state.Signal`, so these
-# translators live here (the one place allowed to know both shapes, §6.1.5). They are
-# pure and are unit-tested directly with fakes.
+# Adapters: frozen Stage 0-3 code speaks its own types; these translators are the one
+# place allowed to know both shapes (§6.1.5) and map them to graph.state.Signal. Pure.
 
 # scan Severity (info/low/medium/high/critical) -> graph Severity. `info` is the
 # scan layer's "no concern" tier, so it maps to CLEAN and never escalates (§4.3).
@@ -177,12 +143,9 @@ def _hash_result_to_graph(r) -> Signal:
 
 
 def load_default_tools() -> InjectedTools:
-    """Wire the spine's four seams to the real Stage 0–3 code. Kept in one place so
-    the rest of the spine never imports those modules directly (layering, §6.1.5).
-
-    The frozen tools use different names/shapes/async than the §2.1 contract, so each
-    seam is a thin per-dep adapter: it calls the real (batch/async) implementation and
-    translates its output into the unified `graph.state.Signal`."""
+    """Wire the spine's four seams to the real Stage 0–3 code, kept in one place so the
+    spine never imports those modules directly (§6.1.5). Each seam is a thin per-dep
+    adapter that calls the real implementation and translates to `graph.state.Signal`."""
     from pathlib import Path
 
     from tools.index.core import discovery, normalizer  # type: ignore
@@ -222,11 +185,8 @@ def load_default_tools() -> InjectedTools:
 
 def index_node(state: AuditState, tools: InjectedTools) -> dict:
     """Stages 0+1 → discover lockfiles, then parse/normalize into the dependency set.
-
-    Merged into one node because discovery and parsing are always adjacent (no gate
-    between them), so there is no reason to thread the intermediate lockfile list
-    through a state channel. Degradation is still per-stage: a discovery failure
-    yields an empty dep set with a note; a parse failure is annotated separately."""
+    Merged because they are always adjacent (no gate between). Degradation is per-stage:
+    discovery and parse failures each yield an empty set with their own note."""
     try:
         lockfiles = tools.discover(state.target)
     except Exception as exc:
@@ -289,10 +249,9 @@ class GateConfig(BaseModel):
 
 
 class GatePlan(BaseModel):
-    """What the gate decided, per dep. `escalations` feeds the max-wins state channel;
-    `fan_out` names the specialists to Send to. Deps absent from fan_out are handled
-    deterministically and flow straight to the scorer. `degraded_notes` records any
-    gray-zone specialist that was dropped because the §5.3 LLM budget was exhausted."""
+    """What the gate decided, per dep: `escalations` feeds the max-wins channel and
+    `fan_out` names specialists to Send to. Deps absent from fan_out flow straight to
+    the scorer; `degraded_notes` records specialists dropped by the §5.3 budget."""
 
     escalations: dict[str, Severity] = Field(default_factory=dict)
     fan_out: list[SpecialistTask] = Field(default_factory=list)
@@ -317,23 +276,9 @@ def _dimension_severity(signals: list[Signal], key: str) -> dict[TrustDimension,
 
 
 def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePlan:
-    """Deterministic gate. For each dep: record its overall static severity, and fan
-    out to a specialist for each LLM-capable dimension sitting in the gray band
-    [gray_floor, decided_ceiling). Reusable by the single-package path.
-
-    Escalate-only holds: the gate can raise a dep into Stage 4 but never clears a
-    signal, and a dep it declines to escalate still carries its full static severity
-    to the scorer.
-
-    Cap-aware (§5.3): each fan-out task costs one LLM call, so candidates are sorted
-    by trigger severity (highest-risk first) and only the first `llm_call_cap −
-    llm_calls` are emitted. The rest are dropped here — deterministically, before any
-    Send — with a degraded note apiece, rather than letting parallel specialist
-    branches race past the ceiling. Escalations are recorded for ALL gray-zone deps
-    regardless of truncation, so a dropped dep still reaches the scorer at its static
-    severity (a skipped specialist can only lose an escalation, never manufacture a
-    downgrade, §2.5). Because the gate reads the same `llm_calls`/`llm_call_cap` on
-    every call, `gate_node` and `gate_edge` compute an identical truncation."""
+    """Deterministic gate: record each dep's static severity and fan out a specialist
+    per LLM-capable dimension in the gray band [gray_floor, decided_ceiling). Cap-aware
+    (§5.3): candidates truncated to the remaining budget; dropped deps keep escalation."""
     config = config or GateConfig()
     plan = GatePlan()
     by_key = {dep_key(d): d for d in state.dependencies}
@@ -415,15 +360,9 @@ def gate_edge(state: AuditState, config: Optional[GateConfig] = None):
 
 
 def add_spine(builder, tools: InjectedTools, config: Optional[GateConfig] = None) -> str:
-    """Add the spine nodes and fixed edges to a LangGraph StateGraph builder.
-
-        index → hash_verify → cheap_signals → gate ─┬─▶ specialists ─▶ report
-                                                     └─▶ report  (nothing gray)
-
-    Returns the entry node name (NODE_INDEX) so the caller can wire the router's
-    full-spine branch to it. Specialist nodes and the report node are added by their
-    own modules before compile; this references them only by the shared names above.
-    """
+    """Add the spine nodes and fixed edges (index → hash_verify → cheap_signals → gate)
+    to a builder, returning the entry node name (NODE_INDEX) for the router's full-spine
+    branch. Specialist and report nodes are added by their own modules before compile."""
     builder.add_node(NODE_INDEX, functools.partial(index_node, tools=tools))
     builder.add_node(NODE_HASH_VERIFY, functools.partial(hash_verify_node, tools=tools))
     builder.add_node(NODE_CHEAP_SIGNALS, functools.partial(cheap_signals_node, tools=tools))
