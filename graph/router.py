@@ -29,7 +29,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from graph.single_agent import NODE_RESOLVE_SINGLE
+from graph.single_pkg import NODE_RESOLVE_SINGLE
 from graph.spine import NODE_INDEX
 from graph.state import RunMode, RunScope, RoutePath
 

@@ -1,0 +1,132 @@
+"""
+credentials.py — Bring-Your-Own-Key (BYOK) credentials for every hosted-model service.
+
+depaudit calls two external model services: the reasoning **LLM** (Claude, used by the
+Stage-4 specialists) and the **embedding** provider (Voyage or compatible, used only by
+the Memory Manager, §2.7.4). Neither key is owned by the depaudit deployment. Each is
+supplied by the *caller* at invocation:
+
+  - API path  (`query`/`audit` over HTTP) — the key arrives in the request (header).
+  - CLI / CI path — the key comes from the *caller's own* environment at run time.
+
+Both assemble the same immutable `UserCredentials` bundle, which is threaded to the
+graph OUT OF BAND — via injected specialist deps and LangGraph `configurable` — and
+NEVER through `AuditState`.
+
+Security invariants (depaudit is a security tool; treat these as load-bearing):
+  1. Keys are `SecretStr`: they never render in reprs, logs, tracebacks, or `model_dump()`.
+  2. Keys never enter `AuditState`, which is checkpointed to Redis (§3.1) — that would
+     persist a user secret. Credentials travel via injection only.
+  3. Keys are never written to PGVector or any report artifact.
+  4. There is no server-side/ambient fallback key: absence of a caller key is an error,
+     not a silent fall-through to a shared account.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from pydantic import BaseModel, SecretStr
+
+# Sensible, overridable defaults. Pin the exact strings per deployment.
+DEFAULT_LLM_MODEL = "claude-sonnet-5"
+DEFAULT_EMBEDDING_MODEL = "voyage-3-large"  # dimensionality follows the model (§3.2)
+
+
+class LLMCredentials(BaseModel):
+    """User-supplied reasoning-LLM credentials."""
+
+    api_key: SecretStr
+    base_url: Optional[str] = None  # proxy / gateway / Bedrock-compatible endpoint
+    model: str = DEFAULT_LLM_MODEL
+
+    model_config = {"frozen": True}
+
+
+class EmbeddingCredentials(BaseModel):
+    """User-supplied embedding-provider credentials. Separate provider ⇒ separate key
+    from the LLM (Anthropic has no first-party embeddings endpoint, §3.2)."""
+
+    api_key: SecretStr
+    base_url: Optional[str] = None
+    model: str = DEFAULT_EMBEDDING_MODEL
+
+    model_config = {"frozen": True}
+
+
+class UserCredentials(BaseModel):
+    """The full BYOK bundle for one invocation. `embedding` is optional — only needed
+    when the memory layer (§3) is enabled for the run."""
+
+    llm: LLMCredentials
+    embedding: Optional[EmbeddingCredentials] = None
+
+    model_config = {"frozen": True}
+
+    # -- constructors: same bundle, different intake --------------------------------
+
+    @classmethod
+    def from_request(
+        cls,
+        *,
+        llm_api_key: str,
+        llm_base_url: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> "UserCredentials":
+        """Build from an HTTP request's supplied values (API path)."""
+        if not llm_api_key:
+            raise MissingCredentialError("llm_api_key")
+        embedding = None
+        if embedding_api_key:
+            embedding = EmbeddingCredentials(
+                api_key=SecretStr(embedding_api_key),
+                base_url=embedding_base_url,
+                model=embedding_model or DEFAULT_EMBEDDING_MODEL,
+            )
+        return cls(
+            llm=LLMCredentials(
+                api_key=SecretStr(llm_api_key),
+                base_url=llm_base_url,
+                model=llm_model or DEFAULT_LLM_MODEL,
+            ),
+            embedding=embedding,
+        )
+
+    @classmethod
+    def from_env(cls, *, require_embedding: bool = False) -> "UserCredentials":
+        """Build from the *caller's own* environment (CLI/CI path). This is still BYOK:
+        the key belongs to whoever runs depaudit, not to a depaudit-owned account.
+
+        Reads: DEPAUDIT_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
+        DEPAUDIT_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
+        llm_key = os.environ.get("DEPAUDIT_LLM_API_KEY")
+        if not llm_key:
+            raise MissingCredentialError("DEPAUDIT_LLM_API_KEY")
+        emb_key = os.environ.get("DEPAUDIT_EMBEDDING_API_KEY")
+        if require_embedding and not emb_key:
+            raise MissingCredentialError("DEPAUDIT_EMBEDDING_API_KEY")
+        return cls.from_request(
+            llm_api_key=llm_key,
+            llm_base_url=os.environ.get("DEPAUDIT_LLM_BASE_URL"),
+            llm_model=os.environ.get("DEPAUDIT_LLM_MODEL"),
+            embedding_api_key=emb_key,
+            embedding_base_url=os.environ.get("DEPAUDIT_EMBEDDING_BASE_URL"),
+            embedding_model=os.environ.get("DEPAUDIT_EMBEDDING_MODEL"),
+        )
+
+    def require_embedding(self) -> EmbeddingCredentials:
+        if self.embedding is None:
+            raise MissingCredentialError("embedding (memory enabled but no embedding key supplied)")
+        return self.embedding
+
+
+class MissingCredentialError(RuntimeError):
+    """Raised when a required BYOK key is absent. There is NO ambient fallback."""
+
+    def __init__(self, what: str):
+        super().__init__(f"missing required user-supplied credential: {what}")
+        self.what = what

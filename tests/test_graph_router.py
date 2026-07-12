@@ -141,7 +141,7 @@ def test_route_condition_selects_entry_node_by_path():
 
 def test_entry_nodes_match_real_graph_nodes():
     # route_condition must return the actual spine/entry node names, not placeholders.
-    from graph.single_agent import NODE_RESOLVE_SINGLE
+    from graph.single_pkg import NODE_RESOLVE_SINGLE
     from graph.spine import NODE_INDEX
 
     assert NODE_SINGLE_PACKAGE_ENTRY == NODE_RESOLVE_SINGLE
