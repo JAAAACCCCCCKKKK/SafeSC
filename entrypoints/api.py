@@ -32,11 +32,13 @@ class AuditBody(BaseModel):
     target: str
     ecosystem: Optional[str] = None
     scope: Optional[RunScope] = None  # explicit override; never risk-derived (§2.2-A)
+    include_report: bool = False      # embed the full canonical report (findings + evidence)
 
 
 class QueryBody(BaseModel):
     target: str
     ecosystem: Optional[str] = None
+    include_report: bool = False
 
 
 class RunResponse(BaseModel):
@@ -47,6 +49,7 @@ class RunResponse(BaseModel):
     incomplete: bool
     summary: str
     per_dep: dict[str, str]
+    report: Optional[dict] = None  # full AuditReport (§6) when include_report is set
 
 
 # ---- credential intake from headers (BYOK) --------------------------------------
@@ -74,8 +77,15 @@ def credentials_from_headers(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-def _to_response(result) -> "RunResponse":
+def _to_response(result, *, include_report: bool = False) -> "RunResponse":
     gd = result.gate_decision
+    report = None
+    if include_report:
+        # The reporter is a pure projection of the finished run (§6); building it here
+        # never touches the gate outcome and holds no secrets (§3.5 invariant #3).
+        from reporter import build_report
+
+        report = build_report(result.final_state, run_id=result.run_id).model_dump()
     return RunResponse(
         run_id=result.run_id,
         passed=result.passed,
@@ -84,6 +94,7 @@ def _to_response(result) -> "RunResponse":
         incomplete=result.incomplete,
         summary=gd.summary,
         per_dep={k: v.name for k, v in gd.per_dep.items()},
+        report=report,
     )
 
 
@@ -108,12 +119,12 @@ def create_app(*, tools, session, memory=None, config=None, checkpointer=None) -
     @app.post("/audit", response_model=RunResponse)
     def audit(body: AuditBody, creds: UserCredentials = Depends(credentials_from_headers)):
         req = AuditRequest(mode=RunMode.AUDIT, target=body.target, ecosystem=body.ecosystem, scope_override=body.scope)
-        return _to_response(_run(req, creds))
+        return _to_response(_run(req, creds), include_report=body.include_report)
 
     @app.post("/query", response_model=RunResponse)
     def query(body: QueryBody, creds: UserCredentials = Depends(credentials_from_headers)):
         req = AuditRequest(mode=RunMode.QUERY, target=body.target, ecosystem=body.ecosystem)
-        return _to_response(_run(req, creds))
+        return _to_response(_run(req, creds), include_report=body.include_report)
 
     @app.post("/webhook", response_model=RunResponse)
     async def webhook(request: Request, creds: UserCredentials = Depends(credentials_from_headers)):

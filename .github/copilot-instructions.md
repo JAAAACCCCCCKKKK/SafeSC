@@ -48,6 +48,7 @@ The single most important thing to understand before reading further: **the agen
 | Live store deployment (Redis/Postgres instance, checkpointer schema, pgvector index) | infra | ⛔ deployment wiring only, not logic |
 | Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
 | Entrypoints (FastAPI `api.py` + `cli.py`) | `entrypoints/` | ✅ implemented (api unit-tested via `run()` seam) |
+| Reporter (SARIF / Markdown / JSON) | `reporter/` | ✅ implemented, unit-tested (§6, §7) |
 
 Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
 
@@ -301,7 +302,7 @@ depaudit/
 │                                     #    All injected into MemoryManager; live store = infra (⛔)
 ├── entrypoints/                      # ✅ api.py (FastAPI: audit + query + webhook),
 │                                     #    cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
-├── reporter/                         # ⛔ SARIF / Markdown / JSON (v1 design; not yet implemented)
+├── reporter/                         # ✅ SARIF / Markdown / JSON — build_report + 3 pure renderers (§6, §7)
 └── credentials.py                    # ✅ BYOK credentials for LLM + embedding services (§3.5)
 ```
 

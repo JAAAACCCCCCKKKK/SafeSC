@@ -27,7 +27,20 @@ def _print_report(result) -> None:
     print(gd.summary)
 
 
-def _run(req: AuditRequest, *, tools, session, memory, config, require_embedding: bool) -> int:
+def _emit_reports(result, *, report_dir, report_format) -> None:
+    """Build the canonical report from the run's final state and write artifacts (§6, §7).
+    Kept out of the graph: the reporter only projects the already-written decision."""
+    from reporter import FORMATS, build_report, write_reports
+
+    report = build_report(result.final_state, run_id=result.run_id)
+    formats = FORMATS if report_format in (None, "all") else [report_format]
+    written = write_reports(report, report_dir, formats=formats)
+    for path in written:
+        print(f"  wrote {path}")
+
+
+def _run(req: AuditRequest, *, tools, session, memory, config, require_embedding: bool,
+         report_dir=None, report_format=None) -> int:
     try:
         creds = UserCredentials.from_env(require_embedding=require_embedding)
     except MissingCredentialError as exc:
@@ -35,6 +48,8 @@ def _run(req: AuditRequest, *, tools, session, memory, config, require_embedding
         return 2
     result = graph_build.run(req, credentials=creds, tools=tools, session=session, memory=memory, config=config)
     _print_report(result)
+    if report_dir:
+        _emit_reports(result, report_dir=report_dir, report_format=report_format)
     return result.exit_code
 
 
@@ -44,11 +59,19 @@ def main(argv=None, *, tools=None, session=None, memory=None, config=None) -> in
     parser = argparse.ArgumentParser(prog="depaudit")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def _add_report_args(p):
+        p.add_argument("--report-dir", default=None, help="write JSON/Markdown/SARIF artifacts here")
+        p.add_argument("--format", dest="report_format", default="all",
+                       choices=["all", "json", "markdown", "md", "sarif"],
+                       help="report format to write (default: all)")
+
     p_audit = sub.add_parser("audit", help="full-repo audit (gates CI)")
     p_audit.add_argument("target", nargs="?", default=".", help="repo path / git URL / lockfile")
+    _add_report_args(p_audit)
 
     p_query = sub.add_parser("query", help="single-package investigation (evidence only)")
     p_query.add_argument("target", help="package spec, e.g. npm:left-pad@1.3.0")
+    _add_report_args(p_query)
 
     sub.add_parser("gc", help="PGVector garbage collection (CronJob entry, §3.4)")
 
@@ -62,7 +85,10 @@ def main(argv=None, *, tools=None, session=None, memory=None, config=None) -> in
         req = AuditRequest(mode=RunMode.AUDIT, target=args.target)
     else:  # query
         req = AuditRequest(mode=RunMode.QUERY, target=args.target)
-    return _run(req, tools=tools, session=session, memory=memory, config=config, require_embedding=use_memory)
+    return _run(
+        req, tools=tools, session=session, memory=memory, config=config, require_embedding=use_memory,
+        report_dir=args.report_dir, report_format=args.report_format,
+    )
 
 
 def _run_gc(memory) -> int:

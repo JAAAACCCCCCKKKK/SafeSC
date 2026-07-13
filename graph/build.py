@@ -66,6 +66,7 @@ class RunResult:
     exit_code: int
     degraded: list
     incomplete: bool
+    final_state: object = None  # the run's final AuditState (or dict); feeds the reporter
 
     @property
     def passed(self) -> bool:
@@ -171,5 +172,6 @@ def _shape_result(run_id: str, mode: RunMode, final, config: RunConfig) -> RunRe
     incomplete = "INCOMPLETE" in (gd.summary or "")
     exit_code = 0 if mode == RunMode.QUERY else gd.exit_code  # query never fails on severity (§1.3)
     return RunResult(
-        run_id=run_id, gate_decision=gd, exit_code=exit_code, degraded=list(degraded), incomplete=incomplete
+        run_id=run_id, gate_decision=gd, exit_code=exit_code, degraded=list(degraded),
+        incomplete=incomplete, final_state=final,
     )
