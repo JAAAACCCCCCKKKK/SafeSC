@@ -1,0 +1,64 @@
+# Example CI gate using the SafeSC `depaudit` action.
+#
+# Copy this into a *consumer* repo and change the `uses:` line to a pinned ref, e.g.:
+#     uses: JAAAACCCCCCKKKK/SafeSC@v1
+# Then add a repository secret named DEPAUDIT_LLM_API_KEY (your BYOK LLM key).
+#
+# In this repo it is manual-only (workflow_dispatch) and self-guards on the secret, so it
+# never fails CI when no key is configured. Uncomment the pull_request/push triggers in a
+# consumer repo to gate merges.
+
+name: depaudit
+
+on:
+  workflow_dispatch:
+  # pull_request:
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+  security-events: write # required to upload the SARIF report
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check BYOK key is configured
+        id: guard
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.DEPAUDIT_LLM_API_KEY }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPAUDIT_LLM_API_KEY secret not set; skipping the audit gate."
+          fi
+
+      - name: Dependency audit gate
+        if: steps.guard.outputs.ready == 'true'
+        id: depaudit
+        uses: ./ # in a consumer repo: JAAAACCCCCCKKKK/SafeSC@v1
+        with:
+          target: "."
+          llm-api-key: ${{ secrets.DEPAUDIT_LLM_API_KEY }}
+          report-dir: depaudit-reports
+
+      - name: Upload SARIF to code scanning
+        if: always() && steps.guard.outputs.ready == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: depaudit-reports/depaudit-report.sarif
+
+      - name: Archive report artifacts
+        if: always() && steps.guard.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: depaudit-reports
+          path: depaudit-reports/

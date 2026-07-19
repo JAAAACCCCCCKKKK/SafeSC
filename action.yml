@@ -1,0 +1,74 @@
+name: "depaudit dependency audit"
+description: >-
+  SafeSC dependency-audit CI gate: deterministic supply-chain signals (Stages 0–3) plus
+  LLM deep analysis (Stage 4). Bring-your-own LLM key; no Redis or Postgres required.
+author: "SafeSC"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  target:
+    description: "Repo path, lockfile, or git URL to audit."
+    required: false
+    default: "."
+  llm-api-key:
+    description: "BYOK reasoning-LLM API key (Anthropic-compatible). Pass a repository secret."
+    required: true
+  llm-model:
+    description: "Override the LLM model id (blank = package default)."
+    required: false
+    default: ""
+  llm-base-url:
+    description: "Override the LLM base URL (proxy / gateway / Bedrock-compatible endpoint)."
+    required: false
+    default: ""
+  report-dir:
+    description: "Directory to write JSON / Markdown / SARIF report artifacts."
+    required: false
+    default: "depaudit-reports"
+  format:
+    description: "Report format to write: all | json | markdown | sarif."
+    required: false
+    default: "all"
+  python-version:
+    description: "Python version used to run depaudit."
+    required: false
+    default: "3.12"
+
+outputs:
+  exit-code:
+    description: "depaudit exit code (0 = gate pass, 1 = gate fail on critical finding)."
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install depaudit (tier-2, no external stores)
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        # Install SafeSC from this action's own checkout, with the LLM 'agent' extra.
+        python -m pip install "${GITHUB_ACTION_PATH}[agent]"
+
+    - name: Run depaudit audit
+      id: run
+      shell: bash
+      env:
+        # BYOK: the key stays in the caller's environment and never enters state/logs (§3.5).
+        DEPAUDIT_LLM_API_KEY: ${{ inputs.llm-api-key }}
+        DEPAUDIT_LLM_MODEL: ${{ inputs.llm-model }}
+        DEPAUDIT_LLM_BASE_URL: ${{ inputs.llm-base-url }}
+      run: |
+        set +e
+        depaudit audit "${{ inputs.target }}" \
+          --report-dir "${{ inputs.report-dir }}" \
+          --format "${{ inputs.format }}"
+        code=$?
+        echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+        exit $code
