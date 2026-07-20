@@ -61,6 +61,19 @@ def _explain_missing_extra(module_name: str) -> None:
     )
 
 
+def _make_console_utf8_safe() -> None:
+    """Ensure report summaries (which contain non-ASCII markers such as ``⚠``) never crash
+    the process on a non-UTF-8 console (e.g. Windows' cp936/GBK CI runners). Report *files*
+    are already written UTF-8; this only hardens the stdout/stderr stream printing."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:  # pragma: no cover - platform/stream dependent
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv=None) -> int:
     """Console-script entry point for ``depaudit`` (audit | query | gc).
 
@@ -68,6 +81,7 @@ def main(argv=None) -> int:
     optional dependencies (LangGraph / Anthropic) are reported with an actionable message
     rather than a raw traceback.
     """
+    _make_console_utf8_safe()
     try:
         tools, session, memory = build_local_runtime()
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive

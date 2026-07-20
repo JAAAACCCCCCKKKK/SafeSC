@@ -35,7 +35,7 @@ jobs:
         run: python -m pip check
 
       - name: Compile project sources
-        run: python -m compileall tools
+        run: python -m compileall tools graph entrypoints reporter memory credentials.py
 
       - name: Discover lockfiles in repository
         run: python -m tools.index.core.discovery .

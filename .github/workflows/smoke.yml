@@ -58,3 +58,49 @@ jobs:
 
       - name: Scan signals smoke test
         run: scan signals smoke-fixture
+
+  # Exercises the real agent path end-to-end: the tools adaptation layer
+  # (graph.spine.load_default_tools), the store-free bootstrap wiring, and — crucially —
+  # the real LangGraph compilation in graph.build.build_graph, none of which the unit
+  # tests cover (they inject a fake graph_factory). Runs fully offline against a clean
+  # fixture (0 real deps → no gray-zone fan-out → no LLM/network call), so a dummy BYOK
+  # key is enough and the gate must PASS (exit 0).
+  agent-path-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install with the agent extra (LangGraph + Anthropic)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[agent]"
+
+      - name: Create clean fixture (virtual root only → 0 real deps)
+        shell: bash
+        run: |
+          mkdir -p agent-fixture
+          cat > agent-fixture/uv.lock <<'EOF'
+          version = 1
+          requires-python = ">=3.12"
+
+          [[package]]
+          name = "example"
+          version = "0.1.0"
+          source = { virtual = "." }
+          EOF
+
+      - name: depaudit audit compiles the graph and gates PASS (offline, dummy key)
+        shell: bash
+        env:
+          DEPAUDIT_LLM_API_KEY: dummy-key-not-used-on-clean-fixture
+        run: |
+          depaudit audit agent-fixture --report-dir agent-reports --format all
+          test -f agent-reports/depaudit-report.json
+          test -f agent-reports/depaudit-report.sarif
+          test -f agent-reports/depaudit-report.md

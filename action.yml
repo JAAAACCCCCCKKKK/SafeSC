@@ -35,6 +35,20 @@ inputs:
     description: "Python version used to run depaudit."
     required: false
     default: "3.12"
+  upload-sarif:
+    description: >-
+      Upload the SARIF report to GitHub code scanning (needs the caller job to grant
+      `permissions: security-events: write`). Set to "false" to skip.
+    required: false
+    default: "true"
+  upload-artifact:
+    description: "Archive the report-dir as a build artifact. Set to \"false\" to skip."
+    required: false
+    default: "true"
+  artifact-name:
+    description: "Name for the archived report artifact."
+    required: false
+    default: "depaudit-reports"
 
 outputs:
   exit-code:
@@ -70,5 +84,34 @@ runs:
           --report-dir "${{ inputs.report-dir }}" \
           --format "${{ inputs.format }}"
         code=$?
+        # Defer the gate's exit code so the report-publishing steps below still run;
+        # a later step re-applies it so the check still fails on a critical finding.
         echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
-        exit $code
+        # Was a SARIF file actually produced? (only when format is all|sarif)
+        if [ -f "${{ inputs.report-dir }}/depaudit-report.sarif" ]; then
+          echo "sarif-produced=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "sarif-produced=false" >> "$GITHUB_OUTPUT"
+        fi
+        exit 0
+
+    # Folded-in publishing so consumers need a single `uses:` step, not three (§CI wrapping).
+    - name: Upload SARIF to code scanning
+      if: >-
+        always() && inputs.upload-sarif == 'true'
+        && steps.run.outputs.sarif-produced == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.report-dir }}/depaudit-report.sarif
+
+    - name: Archive report artifacts
+      if: always() && inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.report-dir }}/
+
+    - name: Re-apply the gate exit code
+      if: always()
+      shell: bash
+      run: exit ${{ steps.run.outputs.exit-code }}

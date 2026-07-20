@@ -41,6 +41,9 @@ jobs:
             echo "::notice::DEPAUDIT_LLM_API_KEY secret not set; skipping the audit gate."
           fi
 
+      # One step: the action installs depaudit, runs the gate, uploads SARIF to code
+      # scanning, and archives the report artifacts. Consumers only add the job-level
+      # `permissions` above and the DEPAUDIT_LLM_API_KEY secret.
       - name: Dependency audit gate
         if: steps.guard.outputs.ready == 'true'
         id: depaudit
@@ -48,17 +51,3 @@ jobs:
         with:
           target: "."
           llm-api-key: ${{ secrets.DEPAUDIT_LLM_API_KEY }}
-          report-dir: depaudit-reports
-
-      - name: Upload SARIF to code scanning
-        if: always() && steps.guard.outputs.ready == 'true'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: depaudit-reports/depaudit-report.sarif
-
-      - name: Archive report artifacts
-        if: always() && steps.guard.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: depaudit-reports
-          path: depaudit-reports/
