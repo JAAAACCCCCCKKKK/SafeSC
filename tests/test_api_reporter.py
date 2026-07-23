@@ -46,7 +46,7 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-_HDRS = {"X-LLM-Api-Key": "super-secret-key"}
+_HDRS = {"X-LLM-Api-Key": "super-secret-key", "X-LLM-Provider": "anthropic"}
 
 
 def test_audit_without_report_omits_it(client):

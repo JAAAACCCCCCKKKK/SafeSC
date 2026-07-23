@@ -57,6 +57,7 @@ class RunResponse(BaseModel):
 
 def credentials_from_headers(
     x_llm_api_key: Optional[str] = Header(default=None, alias="X-LLM-Api-Key"),
+    x_llm_provider: Optional[str] = Header(default=None, alias="X-LLM-Provider"),
     x_llm_base_url: Optional[str] = Header(default=None, alias="X-LLM-Base-Url"),
     x_llm_model: Optional[str] = Header(default=None, alias="X-LLM-Model"),
     x_embedding_api_key: Optional[str] = Header(default=None, alias="X-Embedding-Api-Key"),
@@ -66,6 +67,7 @@ def credentials_from_headers(
     try:
         return UserCredentials.from_request(
             llm_api_key=x_llm_api_key or "",
+            llm_provider=x_llm_provider,
             llm_base_url=x_llm_base_url,
             llm_model=x_llm_model,
             embedding_api_key=x_embedding_api_key,

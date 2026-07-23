@@ -13,17 +13,28 @@ from typing import Optional
 
 from pydantic import BaseModel, SecretStr
 
-# Sensible, overridable defaults. Pin the exact strings per deployment.
-DEFAULT_LLM_MODEL = "claude-sonnet-5"
+# There is NO default LLM provider — the caller MUST choose one (BYOK, §3.5). This map
+# only supplies a default *model* once a provider has been chosen; the caller may override.
+PROVIDER_DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-4o",
+}
 DEFAULT_EMBEDDING_MODEL = "voyage-3-large"  # dimensionality follows the model (§3.2)
 
 
 class LLMCredentials(BaseModel):
-    """User-supplied reasoning-LLM credentials."""
+    """User-supplied reasoning-LLM credentials.
+
+    `provider` selects the client/wire protocol (e.g. "anthropic", "openai"); `base_url`
+    then routes that protocol to any compatible endpoint (proxy / gateway / Bedrock /
+    Azure / OpenRouter / a local server). Both `provider` and `model` are caller-chosen
+    (BYOK) and required — there is no default provider.
+    """
 
     api_key: SecretStr
+    provider: str  # required: no default provider — the caller must configure one
+    model: str     # required: resolved per-provider in `from_request` if not pinned
     base_url: Optional[str] = None  # proxy / gateway / Bedrock-compatible endpoint
-    model: str = DEFAULT_LLM_MODEL
 
     model_config = {"frozen": True}
 
@@ -55,6 +66,7 @@ class UserCredentials(BaseModel):
         cls,
         *,
         llm_api_key: str,
+        llm_provider: Optional[str] = None,
         llm_base_url: Optional[str] = None,
         llm_model: Optional[str] = None,
         embedding_api_key: Optional[str] = None,
@@ -64,6 +76,16 @@ class UserCredentials(BaseModel):
         """Build from an HTTP request's supplied values (API path)."""
         if not llm_api_key:
             raise MissingCredentialError("llm_api_key")
+        provider = (llm_provider or "").strip().lower()
+        if not provider:
+            # No default provider: the caller must configure one (BYOK, §3.5).
+            raise MissingCredentialError("llm_provider")
+        model = llm_model or PROVIDER_DEFAULT_MODELS.get(provider)
+        if not model:
+            # A provider with no built-in default: the caller must pin a model explicitly.
+            raise MissingCredentialError(
+                f"llm_model (no built-in default for provider '{provider}')"
+            )
         embedding = None
         if embedding_api_key:
             embedding = EmbeddingCredentials(
@@ -74,8 +96,9 @@ class UserCredentials(BaseModel):
         return cls(
             llm=LLMCredentials(
                 api_key=SecretStr(llm_api_key),
+                provider=provider,
                 base_url=llm_base_url,
-                model=llm_model or DEFAULT_LLM_MODEL,
+                model=model,
             ),
             embedding=embedding,
         )
@@ -83,16 +106,21 @@ class UserCredentials(BaseModel):
     @classmethod
     def from_env(cls, *, require_embedding: bool = False) -> "UserCredentials":
         """Build from the *caller's own* environment (CLI/CI path) — still BYOK. Reads
-        SAFESC_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
+        SAFESC_LLM_API_KEY and SAFESC_LLM_PROVIDER (both required; no default provider),
+        plus optional SAFESC_LLM_MODEL / SAFESC_LLM_BASE_URL, and — if memory is on —
         SAFESC_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
         llm_key = os.environ.get("SAFESC_LLM_API_KEY")
         if not llm_key:
             raise MissingCredentialError("SAFESC_LLM_API_KEY")
+        llm_provider = os.environ.get("SAFESC_LLM_PROVIDER")
+        if not (llm_provider or "").strip():
+            raise MissingCredentialError("SAFESC_LLM_PROVIDER")
         emb_key = os.environ.get("SAFESC_EMBEDDING_API_KEY")
         if require_embedding and not emb_key:
             raise MissingCredentialError("SAFESC_EMBEDDING_API_KEY")
         return cls.from_request(
             llm_api_key=llm_key,
+            llm_provider=llm_provider,
             llm_base_url=os.environ.get("SAFESC_LLM_BASE_URL"),
             llm_model=os.environ.get("SAFESC_LLM_MODEL"),
             embedding_api_key=emb_key,

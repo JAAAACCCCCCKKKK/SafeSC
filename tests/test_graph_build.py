@@ -33,7 +33,7 @@ def _tools() -> InjectedTools:
 
 
 def _creds() -> UserCredentials:
-    return UserCredentials.from_request(llm_api_key="secret-key-xyz")
+    return UserCredentials.from_request(llm_api_key="secret-key-xyz", llm_provider="anthropic")
 
 
 @pytest.fixture(autouse=True)

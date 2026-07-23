@@ -30,6 +30,7 @@ def _fake_result(*, exit_code=0, passed=True, incomplete=False, summary="ok"):
 @pytest.fixture
 def _llm_env(monkeypatch):
     monkeypatch.setenv("SAFESC_LLM_API_KEY", "byok-secret")
+    monkeypatch.setenv("SAFESC_LLM_PROVIDER", "anthropic")
     monkeypatch.delenv("SAFESC_EMBEDDING_API_KEY", raising=False)
 
 

@@ -51,3 +51,7 @@ jobs:
         with:
           target: "."
           llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
+          llm-provider: anthropic          # required: anthropic | openai (no default)
+          # Optional: pin a model / endpoint.
+          # llm-model: gpt-4o
+          # llm-base-url: https://your-openai-compatible-endpoint/v1

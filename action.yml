@@ -13,14 +13,17 @@ inputs:
     required: false
     default: "."
   llm-api-key:
-    description: "BYOK reasoning-LLM API key (Anthropic-compatible). Pass a repository secret."
+    description: "BYOK reasoning-LLM API key for your chosen provider. Pass a repository secret."
+    required: true
+  llm-provider:
+    description: "LLM provider (required, no default): anthropic or openai (also any OpenAI-compatible endpoint via llm-base-url)."
     required: true
   llm-model:
-    description: "Override the LLM model id (blank = package default)."
+    description: "Override the LLM model id (blank = provider default)."
     required: false
     default: ""
   llm-base-url:
-    description: "Override the LLM base URL (proxy / gateway / Bedrock-compatible endpoint)."
+    description: "Override the LLM base URL (proxy / gateway / Bedrock / Azure / OpenAI-compatible endpoint)."
     required: false
     default: ""
   report-dir:
@@ -67,8 +70,10 @@ runs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        # Install SafeSC from this action's own checkout, with the LLM 'agent' extra.
-        python -m pip install "${GITHUB_ACTION_PATH}[agent]"
+        # Install SafeSC from this action's own checkout, with the orchestration 'agent'
+        # extra plus both built-in provider SDKs (the consumer picks one via llm-provider;
+        # there is no default provider, BYOK — §3.5). Unused SDKs are never imported.
+        python -m pip install "${GITHUB_ACTION_PATH}[agent,anthropic,openai]"
 
     - name: Run safesc audit
       id: run
@@ -76,6 +81,7 @@ runs:
       env:
         # BYOK: the key stays in the caller's environment and never enters state/logs (§3.5).
         SAFESC_LLM_API_KEY: ${{ inputs.llm-api-key }}
+        SAFESC_LLM_PROVIDER: ${{ inputs.llm-provider }}
         SAFESC_LLM_MODEL: ${{ inputs.llm-model }}
         SAFESC_LLM_BASE_URL: ${{ inputs.llm-base-url }}
       run: |

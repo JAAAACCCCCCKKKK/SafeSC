@@ -17,12 +17,18 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
-# Tier-2 CI gate: deterministic spine + Stage-4 LLM specialists. No Redis/Postgres —
-# both are lazily imported, so `safesc audit` runs with only a BYOK LLM key (§3.5).
+# Tier-2 CI gate orchestration: deterministic spine + Stage-4 LLM specialists. No
+# Redis/Postgres. This does NOT pull an LLM provider SDK — there is no default provider
+# (BYOK, §3.5), so you MUST also install the extra for your chosen SAFESC_LLM_PROVIDER,
+# e.g. `pip install "safesc[agent,anthropic]"` or `"safesc[agent,openai]"`.
 agent = [
     "langgraph>=0.2",   # the state machine that schedules the graph (§2.6, §7)
-    "anthropic>=0.39",  # BYOK reasoning-LLM client used by the specialists (§3.5)
 ]
+# Reasoning-LLM providers (BYOK, §3.5). The provider SDK is lazily imported, so only the
+# one matching your configured provider is needed. `openai` also covers every
+# OpenAI-compatible endpoint (Azure / OpenRouter / Together / Groq / Ollama / vLLM …).
+anthropic = ["anthropic>=0.39"]
+openai = ["openai>=1.0"]
 # §3 memory stores — lazily imported, so the core stays installable without these.
 memory = [
     "redis>=5",                          # short-term store + distributed semaphores (§3.1)

@@ -99,6 +99,7 @@ jobs:
         shell: bash
         env:
           SAFESC_LLM_API_KEY: dummy-key-not-used-on-clean-fixture
+          SAFESC_LLM_PROVIDER: anthropic
         run: |
           safesc audit agent-fixture --report-dir agent-reports --format all
           test -f agent-reports/safesc-report.json
