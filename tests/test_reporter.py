@@ -149,7 +149,7 @@ def test_render_json_roundtrips():
 def test_render_markdown_has_verdict_and_evidence():
     state, dep = _state_with_finding()
     md = render_markdown(build_report(state, run_id="RID"))
-    assert "# depaudit report" in md
+    assert "# SafeSC report" in md
     assert "FAIL" in md
     assert dep_key(dep) in md
     assert "install script exfiltrates env" in md
@@ -181,7 +181,7 @@ def test_sarif_structure_and_result():
     doc = build_sarif(build_report(state, run_id="RID"))
     assert doc["version"] == "2.1.0"
     run = doc["runs"][0]
-    assert run["tool"]["driver"]["name"] == "depaudit"
+    assert run["tool"]["driver"]["name"] == "SafeSC"
     # clean/low + high signals: LOW popularity is not clean → it's a result too
     rule_ids = {r["id"] for r in run["tool"]["driver"]["rules"]}
     assert "llm.behavior" in rule_ids and "stage3.downloads" in rule_ids
@@ -225,7 +225,7 @@ def test_render_dispatch_and_unknown_format():
     state, _ = _state_with_finding()
     report = build_report(state)
     assert render(report, "json").startswith("{")
-    assert render(report, "MARKDOWN").startswith("# depaudit")
+    assert render(report, "MARKDOWN").startswith("# SafeSC")
     with pytest.raises(ValueError):
         render(report, "pdf")
 
@@ -235,7 +235,7 @@ def test_write_reports_creates_files(tmp_path):
     report = build_report(state, run_id="RID")
     paths = write_reports(report, tmp_path, formats=FORMATS)
     names = {p.name for p in paths}
-    assert names == {"depaudit-report.json", "depaudit-report.md", "depaudit-report.sarif"}
+    assert names == {"safesc-report.json", "safesc-report.md", "safesc-report.sarif"}
     for p in paths:
         assert p.exists() and p.read_text(encoding="utf-8").strip()
 

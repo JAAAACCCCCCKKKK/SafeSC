@@ -1,4 +1,4 @@
-"""entrypoints/bootstrap.py — production wiring for the ``depaudit`` console script.
+"""entrypoints/bootstrap.py — production wiring for the ``safesc`` console script.
 
 This is the concrete wiring that ``entrypoints/cli.py``'s injectable ``main()`` was
 designed to receive. It constructs the **tier-2** runtime — the deterministic Stage 0–3
@@ -11,7 +11,7 @@ spine plus the Stage-4 LLM specialists — with **no external stores**:
 * no LangGraph checkpointer (every audit run is finite — §1.3).
 
 The only requirement is a caller-supplied reasoning-LLM key in the environment
-(``DEPAUDIT_LLM_API_KEY``, BYOK — §3.5). The graph therefore runs with ``memory=None`` and
+(``SAFESC_LLM_API_KEY``, BYOK — §3.5). The graph therefore runs with ``memory=None`` and
 ``checkpointer=None``.
 
 ``cli.py`` stays thin and testable (its ``main()`` takes injected deps); this module owns
@@ -54,7 +54,7 @@ def build_local_runtime():
 
 def _explain_missing_extra(module_name: str) -> None:
     print(
-        f"depaudit: the tier-2 audit path needs the '{module_name}' package, which is part "
+        f"safesc: the tier-2 audit path needs the '{module_name}' package, which is part "
         "of the optional 'agent' extra.\n"
         "Install it with:  pip install 'safesc[agent]'",
         file=sys.stderr,
@@ -75,7 +75,7 @@ def _make_console_utf8_safe() -> None:
 
 
 def main(argv=None) -> int:
-    """Console-script entry point for ``depaudit`` (audit | query | gc).
+    """Console-script entry point for ``safesc`` (audit | query | gc).
 
     Builds the store-free runtime and delegates to the injectable ``cli.main``. Missing
     optional dependencies (LangGraph / Anthropic) are reported with an actionable message

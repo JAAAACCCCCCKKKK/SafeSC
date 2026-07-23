@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - fallback for early-build environments
         return _decorate(fn) if callable(fn) else _decorate
 
 
-logger = logging.getLogger("depaudit.deep")
+logger = logging.getLogger("safesc.deep")
 
 # =============================================================================
 # Limits (bounded cost — CLAUDE.md §5.1)
@@ -223,7 +223,7 @@ class ClonedRepo:
 
 
 def _cache_root() -> Path:
-    root = Path(os.environ.get("DEPAUDIT_DEEP_CACHE", tempfile.gettempdir())) / "depaudit-deep"
+    root = Path(os.environ.get("SAFESC_DEEP_CACHE", tempfile.gettempdir())) / "safesc-deep"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

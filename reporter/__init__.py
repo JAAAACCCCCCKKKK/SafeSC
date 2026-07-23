@@ -53,7 +53,7 @@ def write_reports(
     out_dir: str | Path,
     *,
     formats: Iterable[str] = FORMATS,
-    stem: str = "depaudit-report",
+    stem: str = "safesc-report",
 ) -> list[Path]:
     """Render and write one file per requested format into `out_dir`. Returns the paths.
 

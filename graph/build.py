@@ -37,7 +37,7 @@ from graph.spine import (
 )
 from graph.state import AuditState, GateDecision, RunMode
 
-logger = logging.getLogger("depaudit.build")
+logger = logging.getLogger("safesc.build")
 
 
 def retrying_tools(tools: InjectedTools, policy: RetryPolicy = RetryPolicy()) -> InjectedTools:

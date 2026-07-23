@@ -16,7 +16,7 @@ from credentials import LLMCredentials, UserCredentials
 from graph.specialists.base import LLMClient, SpecialistDeps
 from graph.state import LLMOutput
 
-logger = logging.getLogger("depaudit.llm")
+logger = logging.getLogger("safesc.llm")
 
 _MAX_TOKENS = 1024
 _JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)

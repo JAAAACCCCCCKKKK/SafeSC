@@ -1,14 +1,14 @@
-# Example CI gate using the SafeSC `depaudit` action.
+# Example CI gate using the SafeSC action.
 #
 # Copy this into a *consumer* repo and change the `uses:` line to a pinned ref, e.g.:
 #     uses: JAAAACCCCCCKKKK/SafeSC@v1
-# Then add a repository secret named DEPAUDIT_LLM_API_KEY (your BYOK LLM key).
+# Then add a repository secret named SAFESC_LLM_API_KEY (your BYOK LLM key).
 #
 # In this repo it is manual-only (workflow_dispatch) and self-guards on the secret, so it
 # never fails CI when no key is configured. Uncomment the pull_request/push triggers in a
 # consumer repo to gate merges.
 
-name: depaudit
+name: SafeSC
 
 on:
   workflow_dispatch:
@@ -34,20 +34,20 @@ jobs:
         id: guard
         shell: bash
         run: |
-          if [ -n "${{ secrets.DEPAUDIT_LLM_API_KEY }}" ]; then
+          if [ -n "${{ secrets.SAFESC_LLM_API_KEY }}" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::DEPAUDIT_LLM_API_KEY secret not set; skipping the audit gate."
+            echo "::notice::SAFESC_LLM_API_KEY secret not set; skipping the audit gate."
           fi
 
-      # One step: the action installs depaudit, runs the gate, uploads SARIF to code
+      # One step: the action installs SafeSC, runs the gate, uploads SARIF to code
       # scanning, and archives the report artifacts. Consumers only add the job-level
-      # `permissions` above and the DEPAUDIT_LLM_API_KEY secret.
+      # `permissions` above and the SAFESC_LLM_API_KEY secret.
       - name: Dependency audit gate
         if: steps.guard.outputs.ready == 'true'
-        id: depaudit
+        id: safesc
         uses: ./ # in a consumer repo: JAAAACCCCCCKKKK/SafeSC@v1
         with:
           target: "."
-          llm-api-key: ${{ secrets.DEPAUDIT_LLM_API_KEY }}
+          llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}

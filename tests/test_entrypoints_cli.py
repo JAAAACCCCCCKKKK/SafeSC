@@ -29,8 +29,8 @@ def _fake_result(*, exit_code=0, passed=True, incomplete=False, summary="ok"):
 
 @pytest.fixture
 def _llm_env(monkeypatch):
-    monkeypatch.setenv("DEPAUDIT_LLM_API_KEY", "byok-secret")
-    monkeypatch.delenv("DEPAUDIT_EMBEDDING_API_KEY", raising=False)
+    monkeypatch.setenv("SAFESC_LLM_API_KEY", "byok-secret")
+    monkeypatch.delenv("SAFESC_EMBEDDING_API_KEY", raising=False)
 
 
 def test_audit_returns_gate_exit_code(monkeypatch, capsys, _llm_env):
@@ -54,7 +54,7 @@ def test_incomplete_note_printed(monkeypatch, capsys, _llm_env):
 
 
 def test_missing_credential_returns_2(monkeypatch, capsys):
-    monkeypatch.delenv("DEPAUDIT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("SAFESC_LLM_API_KEY", raising=False)
     rc = cli.main(["audit", "."], tools=object(), session=object())
     assert rc == 2
     assert "error" in capsys.readouterr().err
@@ -63,7 +63,7 @@ def test_missing_credential_returns_2(monkeypatch, capsys):
 def test_report_dir_emits_artifacts(monkeypatch, tmp_path, capsys, _llm_env):
     monkeypatch.setattr(cli.graph_build, "run", lambda *a, **k: _fake_result())
     monkeypatch.setattr("reporter.build_report", lambda state, run_id: object())
-    written = [tmp_path / "depaudit-report.json"]
+    written = [tmp_path / "safesc-report.json"]
     monkeypatch.setattr("reporter.write_reports", lambda report, d, formats: written)
     monkeypatch.setattr("reporter.FORMATS", ["json"])
     rc = cli.main(["audit", ".", "--report-dir", str(tmp_path), "--format", "json"],

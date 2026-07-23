@@ -24,7 +24,7 @@ from graph.spine import SPECIALIST_NODE, SpecialistTask
 if TYPE_CHECKING:
     from graph.harness.constraint_validator import ConstraintValidator
 
-logger = logging.getLogger("depaudit.specialist")
+logger = logging.getLogger("safesc.specialist")
 
 
 # LLM client contract: (system_prompt, user_prompt) -> §4.2 LLMOutput. The harness

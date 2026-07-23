@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
 # Tier-2 CI gate: deterministic spine + Stage-4 LLM specialists. No Redis/Postgres —
-# both are lazily imported, so `depaudit audit` runs with only a BYOK LLM key (§3.5).
+# both are lazily imported, so `safesc audit` runs with only a BYOK LLM key (§3.5).
 agent = [
     "langgraph>=0.2",   # the state machine that schedules the graph (§2.6, §7)
     "anthropic>=0.39",  # BYOK reasoning-LLM client used by the specialists (§3.5)
@@ -36,7 +36,7 @@ index = "tools.index.cli.main:main"
 scan = "tools.scan.cli.main:main"
 # Tier-2 CI entrypoint: wires the real tools + a store-free local session, then delegates
 # to the injectable entrypoints.cli.main (no Redis/Postgres; BYOK LLM key from env).
-depaudit = "entrypoints.bootstrap:main"
+safesc = "entrypoints.bootstrap:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -52,7 +52,7 @@ show_missing = true
 skip_empty = true
 
 [tool.hatch.build.targets.wheel]
-# Ship the full runtime, not just the frozen Stage 0–3 tools, so the `depaudit`
+# Ship the full runtime, not just the frozen Stage 0–3 tools, so the `safesc`
 # console script and its imports (graph, entrypoints, reporter, memory) resolve after
 # a plain `pip install`. `credentials.py` is a top-level module, hence force-include.
 packages = ["tools", "graph", "entrypoints", "reporter", "memory"]

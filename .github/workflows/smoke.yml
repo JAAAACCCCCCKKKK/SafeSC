@@ -95,12 +95,12 @@ jobs:
           source = { virtual = "." }
           EOF
 
-      - name: depaudit audit compiles the graph and gates PASS (offline, dummy key)
+      - name: safesc audit compiles the graph and gates PASS (offline, dummy key)
         shell: bash
         env:
-          DEPAUDIT_LLM_API_KEY: dummy-key-not-used-on-clean-fixture
+          SAFESC_LLM_API_KEY: dummy-key-not-used-on-clean-fixture
         run: |
-          depaudit audit agent-fixture --report-dir agent-reports --format all
-          test -f agent-reports/depaudit-report.json
-          test -f agent-reports/depaudit-report.sarif
-          test -f agent-reports/depaudit-report.md
+          safesc audit agent-fixture --report-dir agent-reports --format all
+          test -f agent-reports/safesc-report.json
+          test -f agent-reports/safesc-report.sarif
+          test -f agent-reports/safesc-report.md

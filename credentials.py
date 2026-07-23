@@ -83,21 +83,21 @@ class UserCredentials(BaseModel):
     @classmethod
     def from_env(cls, *, require_embedding: bool = False) -> "UserCredentials":
         """Build from the *caller's own* environment (CLI/CI path) — still BYOK. Reads
-        DEPAUDIT_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
-        DEPAUDIT_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
-        llm_key = os.environ.get("DEPAUDIT_LLM_API_KEY")
+        SAFESC_LLM_API_KEY (+ _BASE_URL / _MODEL) and, if memory is on,
+        SAFESC_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
+        llm_key = os.environ.get("SAFESC_LLM_API_KEY")
         if not llm_key:
-            raise MissingCredentialError("DEPAUDIT_LLM_API_KEY")
-        emb_key = os.environ.get("DEPAUDIT_EMBEDDING_API_KEY")
+            raise MissingCredentialError("SAFESC_LLM_API_KEY")
+        emb_key = os.environ.get("SAFESC_EMBEDDING_API_KEY")
         if require_embedding and not emb_key:
-            raise MissingCredentialError("DEPAUDIT_EMBEDDING_API_KEY")
+            raise MissingCredentialError("SAFESC_EMBEDDING_API_KEY")
         return cls.from_request(
             llm_api_key=llm_key,
-            llm_base_url=os.environ.get("DEPAUDIT_LLM_BASE_URL"),
-            llm_model=os.environ.get("DEPAUDIT_LLM_MODEL"),
+            llm_base_url=os.environ.get("SAFESC_LLM_BASE_URL"),
+            llm_model=os.environ.get("SAFESC_LLM_MODEL"),
             embedding_api_key=emb_key,
-            embedding_base_url=os.environ.get("DEPAUDIT_EMBEDDING_BASE_URL"),
-            embedding_model=os.environ.get("DEPAUDIT_EMBEDDING_MODEL"),
+            embedding_base_url=os.environ.get("SAFESC_EMBEDDING_BASE_URL"),
+            embedding_model=os.environ.get("SAFESC_EMBEDDING_MODEL"),
         )
 
     def require_embedding(self) -> EmbeddingCredentials:

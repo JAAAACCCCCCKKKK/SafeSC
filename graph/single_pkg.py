@@ -14,7 +14,7 @@ from typing import Optional
 from graph.spine import NODE_HASH_VERIFY
 from graph.state import Dependency, emit_degraded
 
-logger = logging.getLogger("depaudit.single_package")
+logger = logging.getLogger("safesc.single_package")
 
 # Node name for graph wiring. The router's single-package branch lands here.
 NODE_RESOLVE_SINGLE = "resolve_single_package"

@@ -1,4 +1,4 @@
-name: "depaudit dependency audit"
+name: "SafeSC dependency audit"
 description: >-
   SafeSC dependency-audit CI gate: deterministic supply-chain signals (Stages 0–3) plus
   LLM deep analysis (Stage 4). Bring-your-own LLM key; no Redis or Postgres required.
@@ -26,13 +26,13 @@ inputs:
   report-dir:
     description: "Directory to write JSON / Markdown / SARIF report artifacts."
     required: false
-    default: "depaudit-reports"
+    default: "safesc-reports"
   format:
     description: "Report format to write: all | json | markdown | sarif."
     required: false
     default: "all"
   python-version:
-    description: "Python version used to run depaudit."
+    description: "Python version used to run SafeSC."
     required: false
     default: "3.12"
   upload-sarif:
@@ -48,11 +48,11 @@ inputs:
   artifact-name:
     description: "Name for the archived report artifact."
     required: false
-    default: "depaudit-reports"
+    default: "safesc-reports"
 
 outputs:
   exit-code:
-    description: "depaudit exit code (0 = gate pass, 1 = gate fail on critical finding)."
+    description: "SafeSC exit code (0 = gate pass, 1 = gate fail on critical finding)."
     value: ${{ steps.run.outputs.exit-code }}
 
 runs:
@@ -63,24 +63,24 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install depaudit (tier-2, no external stores)
+    - name: Install SafeSC (tier-2, no external stores)
       shell: bash
       run: |
         python -m pip install --upgrade pip
         # Install SafeSC from this action's own checkout, with the LLM 'agent' extra.
         python -m pip install "${GITHUB_ACTION_PATH}[agent]"
 
-    - name: Run depaudit audit
+    - name: Run safesc audit
       id: run
       shell: bash
       env:
         # BYOK: the key stays in the caller's environment and never enters state/logs (§3.5).
-        DEPAUDIT_LLM_API_KEY: ${{ inputs.llm-api-key }}
-        DEPAUDIT_LLM_MODEL: ${{ inputs.llm-model }}
-        DEPAUDIT_LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        SAFESC_LLM_API_KEY: ${{ inputs.llm-api-key }}
+        SAFESC_LLM_MODEL: ${{ inputs.llm-model }}
+        SAFESC_LLM_BASE_URL: ${{ inputs.llm-base-url }}
       run: |
         set +e
-        depaudit audit "${{ inputs.target }}" \
+        safesc audit "${{ inputs.target }}" \
           --report-dir "${{ inputs.report-dir }}" \
           --format "${{ inputs.format }}"
         code=$?
@@ -88,7 +88,7 @@ runs:
         # a later step re-applies it so the check still fails on a critical finding.
         echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
         # Was a SARIF file actually produced? (only when format is all|sarif)
-        if [ -f "${{ inputs.report-dir }}/depaudit-report.sarif" ]; then
+        if [ -f "${{ inputs.report-dir }}/safesc-report.sarif" ]; then
           echo "sarif-produced=true" >> "$GITHUB_OUTPUT"
         else
           echo "sarif-produced=false" >> "$GITHUB_OUTPUT"
@@ -102,7 +102,7 @@ runs:
         && steps.run.outputs.sarif-produced == 'true'
       uses: github/codeql-action/upload-sarif@v3
       with:
-        sarif_file: ${{ inputs.report-dir }}/depaudit-report.sarif
+        sarif_file: ${{ inputs.report-dir }}/safesc-report.sarif
 
     - name: Archive report artifacts
       if: always() && inputs.upload-artifact == 'true'

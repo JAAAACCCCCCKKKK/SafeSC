@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a new capability or improvement for depaudit / SafeSC
+description: Suggest a new capability or improvement for SafeSC
 title: "[Feature]: "
 labels: ["enhancement", "triage"]
 body:
@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for the idea! Please describe the problem you're trying to solve, not just the
-        solution — it helps us find the best fit for depaudit's deterministic-spine architecture.
+        solution — it helps us find the best fit for SafeSC's deterministic-spine architecture.
 
   - type: checkboxes
     id: preflight
@@ -30,7 +30,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What would you like depaudit to do?
+      description: What would you like SafeSC to do?
     validations:
       required: true
 

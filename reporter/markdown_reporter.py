@@ -46,7 +46,7 @@ def _finding_details(f: DependencyFinding) -> list[str]:
 def render_markdown(report: AuditReport) -> str:
     status = "PASS ✅" if report.passed else "FAIL ❌"
     out: list[str] = [
-        f"# depaudit report — {report.mode.upper()}",
+        f"# SafeSC report — {report.mode.upper()}",
         "",
         f"**Result:** {status}  |  **Overall:** {_badge(report.overall_severity)}  |  "
         f"**Exit:** {report.exit_code}",

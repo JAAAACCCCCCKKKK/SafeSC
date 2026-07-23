@@ -1,4 +1,4 @@
-"""Unit tests for Stage 3: cheap signal collection (depaudit.signals).
+"""Unit tests for Stage 3: cheap signal collection (SafeSC.signals).
 
 All network calls are mocked via unittest.mock — no real HTTP requests.
 Async tests run under pytest-asyncio (asyncio_mode = "auto").

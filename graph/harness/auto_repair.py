@@ -16,7 +16,7 @@ from typing import Callable, Iterable, Optional
 
 from graph.state import emit_degraded
 
-logger = logging.getLogger("depaudit.auto_repair")
+logger = logging.getLogger("safesc.auto_repair")
 
 # Substrings identifying transient infrastructure faults by message (SDK exception types
 # aren't importable here, so we classify structurally). Extend per provider as needed.

@@ -42,7 +42,7 @@ def _rule(source: str, dimension: str, worst: str) -> dict:
         "id": source,
         "name": source.replace(".", "_"),
         "shortDescription": {"text": f"{dimension} signal: {source}"},
-        "fullDescription": {"text": f"depaudit {dimension}-dimension detector '{source}'."},
+        "fullDescription": {"text": f"SafeSC {dimension}-dimension detector '{source}'."},
         "defaultConfiguration": {"level": _level(worst)},
         "properties": {
             "dimension": dimension,
@@ -121,7 +121,7 @@ def build_sarif(report: AuditReport) -> dict:
             {
                 "tool": {
                     "driver": {
-                        "name": "depaudit",
+                        "name": "SafeSC",
                         "informationUri": _DRIVER_URI,
                         "version": report.schema_version,
                         "rules": list(rules.values()),

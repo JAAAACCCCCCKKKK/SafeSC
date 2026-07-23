@@ -15,7 +15,7 @@ from typing import Optional
 
 from graph.state import LLMOutput, Severity, Signal, TrustDimension
 
-logger = logging.getLogger("depaudit.validator")
+logger = logging.getLogger("safesc.validator")
 
 _VALID_VERDICTS = {"clean", "suspicious", "malicious"}
 # path-like tokens inside a free-text evidence ref (e.g. "scripts/setup.js", "build.rs")

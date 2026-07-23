@@ -26,7 +26,7 @@ from graph.state import (
     emit_degraded,
 )
 
-logger = logging.getLogger("depaudit.spine")
+logger = logging.getLogger("safesc.spine")
 
 # Send is only needed for the LangGraph adapter; keep the module importable/testable
 # without LangGraph installed.

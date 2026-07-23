@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from graph.state import AuditState, GateDecision, Severity, TrustDimension, dep_key
 
-logger = logging.getLogger("depaudit.memory")
+logger = logging.getLogger("safesc.memory")
 
 
 def artifact_id(dep) -> str:
@@ -165,7 +165,7 @@ class MemoryManager:
     # ------------------------------------------------------------------ maintenance
 
     def gc(self, **kwargs) -> dict:
-        """Differentiated long-term retention (§3.4), invoked only by `depaudit gc` — never
+        """Differentiated long-term retention (§3.4), invoked only by `safesc gc` — never
         by a graph node. Delegated to the vector store so store access stays centralised in
         this one component (§6.1.6). Redis short-term is TTL-only and needs no sweep."""
         if self.vector is None or not hasattr(self.vector, "gc"):

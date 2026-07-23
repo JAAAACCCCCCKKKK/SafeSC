@@ -16,7 +16,7 @@ from graph import build as graph_build
 from graph.router import AuditRequest
 from graph.state import RunMode, RunScope
 
-logger = logging.getLogger("depaudit.api")
+logger = logging.getLogger("safesc.api")
 
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -104,7 +104,7 @@ def create_app(*, tools, session, memory=None, config=None, checkpointer=None) -
     if FastAPI is None:  # pragma: no cover
         raise RuntimeError("fastapi is not installed")
 
-    app = FastAPI(title="depaudit", version="2.5")
+    app = FastAPI(title="SafeSC", version="2.5")
 
     def _run(req: AuditRequest, creds: UserCredentials):
         return graph_build.run(

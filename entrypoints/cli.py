@@ -56,7 +56,7 @@ def _run(req: AuditRequest, *, tools, session, memory, config, require_embedding
 def main(argv=None, *, tools=None, session=None, memory=None, config=None) -> int:
     """Entry point. Machinery is injected for testability; in production a thin
     `__main__` wires the real tools/session/memory and calls this."""
-    parser = argparse.ArgumentParser(prog="depaudit")
+    parser = argparse.ArgumentParser(prog="safesc")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def _add_report_args(p):

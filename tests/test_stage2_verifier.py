@@ -1,4 +1,4 @@
-"""Unit tests for Stage 2: hash verification (depaudit.signals.provenance).
+"""Unit tests for Stage 2: hash verification (SafeSC.signals.provenance).
 
 All network calls are mocked via unittest.mock — no real HTTP requests.
 Async tests run under pytest-asyncio (asyncio_mode = "auto").

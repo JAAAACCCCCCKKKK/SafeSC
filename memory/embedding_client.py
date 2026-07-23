@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 from credentials import EmbeddingCredentials
 
-logger = logging.getLogger("depaudit.embedding")
+logger = logging.getLogger("safesc.embedding")
 
 # An embedder maps texts -> vectors. Dimensionality is fixed by the model (§3.2) and
 # must match the PGVector column width for the deployment.

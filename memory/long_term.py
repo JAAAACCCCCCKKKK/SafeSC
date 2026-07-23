@@ -9,7 +9,7 @@ Interface consumed by the MemoryManager:
   * ``query_similar(embedding, k) -> list[dict]`` — behaviourally-similar prior records,
   * ``upsert(artifact_id, embedding, record) -> None`` — write at the tail of report_agent,
   * ``get(artifact_id) -> dict | None`` — exact-key fetch for the max-wins collision check,
-  * ``gc(...) -> dict`` — §3.4 differentiated retention, invoked only by `depaudit gc`.
+  * ``gc(...) -> dict`` — §3.4 differentiated retention, invoked only by `safesc gc`.
 
 Vectors are written as pgvector literals with an explicit ``::vector`` cast, so the store
 works over a plain DB-API connection without registering an adapter. The connection is
@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-logger = logging.getLogger("depaudit.memory.long_term")
+logger = logging.getLogger("safesc.memory.long_term")
 
 # Column width is fixed by the embedding model (§3.2); pin per deployment. voyage-3-large
 # emits 1024-d vectors — change the model ⇒ re-index, not a hot swap.
@@ -37,8 +37,8 @@ DEFAULT_ESCALATE_FLOOR = 2  # Severity.MEDIUM
 
 @dataclass
 class PGVectorConfig:
-    dsn: str = "postgresql://localhost:5432/depaudit"
-    table: str = "depaudit_memory"
+    dsn: str = "postgresql://localhost:5432/safesc"
+    table: str = "safesc_memory"
     embedding_dim: int = DEFAULT_EMBEDDING_DIM
     escalate_floor: int = DEFAULT_ESCALATE_FLOOR
     benign_retention_days: int = 90  # low-severity clean records expire on this cycle
@@ -179,7 +179,7 @@ class PGVectorStore:
     def gc(self, *, retention_days: Optional[int] = None) -> dict:
         """Differentiated retention: escalated records and known-attack fingerprints are
         kept indefinitely; low-severity benign confirmations older than the cycle expire.
-        Invoked only by the external `depaudit gc` CronJob, never by a graph node."""
+        Invoked only by the external `safesc gc` CronJob, never by a graph node."""
         t = self.config.table
         days = self.config.benign_retention_days if retention_days is None else retention_days
         with self._connect() as conn:

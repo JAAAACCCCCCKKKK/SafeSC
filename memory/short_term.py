@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-logger = logging.getLogger("depaudit.memory.short_term")
+logger = logging.getLogger("safesc.memory.short_term")
 
 DEFAULT_HOT_TTL_S = 7 * 24 * 3600  # §3.1 cross-run cheap-signal reuse window
 

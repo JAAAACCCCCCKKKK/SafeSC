@@ -129,7 +129,7 @@ def report_node(state: AuditState, config: ScoreConfig | None = None, memory=Non
         except Exception:  # never let persistence failure change the gate outcome
             import logging
 
-            logging.getLogger("depaudit.report").warning("memory persist failed", exc_info=True)
+            logging.getLogger("safesc.report").warning("memory persist failed", exc_info=True)
     return {"gate_decision": decision}
 
 

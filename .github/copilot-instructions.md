@@ -1,14 +1,14 @@
-# CLAUDE.md — depaudit Project Development Rules (v2.6: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.6: Agent Architecture)
 
-> **v2.6 (stores landed).** The two §3 store clients are now **implemented and unit-tested**: `memory/short_term.py` (`ShortTermStore` — the injectable Redis seam serving the hot cache, the checkpointer factory, and the SessionManager's ZSET ops via one client) and `memory/long_term.py` (`PGVectorStore` — `query_similar`/`upsert`/`get`/`gc` over a plain DB-API connection, vectors written as `::vector` literals, defense-in-depth `GREATEST` max-wins, §3.4 differentiated-retention GC). Both use **lazy imports** so the core stays installable without the new optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-redis); both are consumed by the MemoryManager purely via **injection** (§6.1.6). `MemoryManager.gc()` now delegates to the vector store so `depaudit gc` (§3.4) is wired end-to-end. What remains is **deployment**, not code: a live Redis/Postgres instance, a pinned embedding model+dimension, and the similarity cutoff. Builds on v2.5 (harness + memory-manager).
+> **v2.6 (stores landed).** The two §3 store clients are now **implemented and unit-tested**: `memory/short_term.py` (`ShortTermStore` — the injectable Redis seam serving the hot cache, the checkpointer factory, and the SessionManager's ZSET ops via one client) and `memory/long_term.py` (`PGVectorStore` — `query_similar`/`upsert`/`get`/`gc` over a plain DB-API connection, vectors written as `::vector` literals, defense-in-depth `GREATEST` max-wins, §3.4 differentiated-retention GC). Both use **lazy imports** so the core stays installable without the new optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-redis); both are consumed by the MemoryManager purely via **injection** (§6.1.6). `MemoryManager.gc()` now delegates to the vector store so `safesc gc` (§3.4) is wired end-to-end. What remains is **deployment**, not code: a live Redis/Postgres instance, a pinned embedding model+dimension, and the similarity cutoff. Builds on v2.5 (harness + memory-manager).
 
 > **v2.5 (harness + memory landed).** The four Harness components (§2.7) and the Memory Manager's read/write paths are now **implemented and unit-tested**, moving §2.7 and §3 from design to code: `graph/harness/{constraint_validator,auto_repair,session_manager,memory_manager}.py`. The constraint validator's repair loop is independent of auto-repair (no retry storm); semaphores use the self-healing ZSET-token pattern; memory persists only escalated + high-popularity-benign records with max-wins/anomaly-flagging. The stores themselves (a live Redis/PGVector deployment) and the FastAPI entrypoints remain the last ⛔ items. Builds on v2.4 (BYOK).
 
-> **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; depaudit holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
+> **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; SafeSC holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
 
 > **v2.3 (design sync).** The Harness Layer (§2.7) is expanded from three bullets into four specified components, adding a **Memory Manager** (§2.7.4) as the single read/write point for the §3 stores. The memory read/write paths, embedding source, and GC strategy are now pinned: embeddings come from an **external provider API (BYOK, see §3.5)** (Voyage AI for the Claude stack — Anthropic has no first-party embeddings endpoint — kept provider-swappable, §3.2); long-term GC runs as a **Kubernetes CronJob** (§3.4). These are **design-level** decisions; the harness and memory modules remain ⛔ unimplemented (§0.1). Builds on v2.2's landed agent-layer code (state, router, spine, specialists, scorer).
 
-This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **depaudit** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
+This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **SafeSC** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
 
 The single most important thing to understand before reading further: **the agent layer changes *how work is scheduled*, not *how decisions are made*.** Every v1 iron rule about the scorer being the sole decision point and the LLM only escalating (never downgrading) survives verbatim. The graph is a scheduler on top of the v1 signal→scorer model, not a replacement for it.
 
@@ -27,7 +27,7 @@ The single most important thing to understand before reading further: **the agen
 | Cache | In-process / filesystem / S3 | Redis (short-term) + PGVector (long-term) |
 | Concurrency | Local per-host semaphores | Redis-backed distributed semaphores |
 
-**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** depaudit gains an agent mode, but every execution is still **triggered and finite** — a CI event, a webhook, or an explicit CLI/API query — never a persistent monitor.
+**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** SafeSC gains an agent mode, but every execution is still **triggered and finite** — a CI event, a webhook, or an explicit CLI/API query — never a persistent monitor.
 
 ### 0.1 Build Status
 
@@ -124,7 +124,7 @@ v1's injection worry: an attacker writes `"this is safe, ignore warnings"` in a 
 
 v2 introduces a **new** injection surface: an attacker crafts package metadata to steer the **agent's control flow** — e.g. to *skip* hash verification or *terminate early* before behavior analysis. An agent free to choose its whole tool sequence is vulnerable to this.
 
-**Mitigation, and the reason for §1.3's autonomy boundary:** Stages 0–3 are a **non-discretionary fixed sequence** — the agent cannot be talked out of running them, because it never chose to run them; the spine does. Agent discretion exists *only* in Stage-4 specialist selection, and there the failure mode is bounded: at worst the agent skips a specialist, which can only *lose* an escalation signal, never *manufacture* a downgrade. Combined with §4.3 (LLM escalates only) and §3.3 (memory informs, never overrides), all three of depaudit's LLM/agent input channels share one invariant: **they can raise severity but never lower it.**
+**Mitigation, and the reason for §1.3's autonomy boundary:** Stages 0–3 are a **non-discretionary fixed sequence** — the agent cannot be talked out of running them, because it never chose to run them; the spine does. Agent discretion exists *only* in Stage-4 specialist selection, and there the failure mode is bounded: at worst the agent skips a specialist, which can only *lose* an escalation signal, never *manufacture* a downgrade. Combined with §4.3 (LLM escalates only) and §3.3 (memory informs, never overrides), all three of SafeSC's LLM/agent input channels share one invariant: **they can raise severity but never lower it.**
 
 ### 2.6 Shared State (blackboard) *(implemented: `graph/state.py`)*
 A single typed LangGraph state object (`AuditState`, Pydantic) threads through every node: `Dependency[]`, accumulated `Signal[]`, per-dep escalation map, live LLM-call count (for §5.3), and degraded notes. It is the **sole** inter-node channel — no direct agent-to-agent messaging, no side channels. Parallel specialists write via **Annotated channel reducers** so out-of-order fan-in merges deterministically:
@@ -187,7 +187,7 @@ Note: within a single graph run, parallel specialists synchronize via LangGraph 
 - Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns). `PGVectorStore` exposes `query_similar`/`upsert`/`get`/`gc` plus an idempotent `ensure_schema()`; vectors are written as `::vector` literals over a plain DB-API connection (no adapter registration), and `upsert` carries a defense-in-depth `GREATEST(...)` max-wins so a cross-process race on the same immutable hash can't lower a stored severity (§2.7.4). The connection is injected (`connect` factory), so it unit-tests against a fake; `from_dsn` builds the real psycopg one lazily.
 - Used purely as **retrieval context**: before a Stage-4 specialist runs, PGVector is queried for prior or behaviorally-similar findings and those are supplied as few-shot context. This cuts redundant deep analysis (cost) and grounds the LLM in prior evidence.
 - Replaces v1's L3 (S3/Redis team cache). PGVector is now the canonical long-term store; Redis stays hot/short-term only.
-- **Embeddings are produced by an external provider API, not by depaudit.** The LLM provider (Claude) has *no* first-party embeddings endpoint, so the embedding model is a **separate service with a separate, user-supplied key (BYOK, §3.5)**. Base URL and model stay configurable per deployment (`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` may set non-secret defaults), but the **key itself is caller-supplied and never server-stored**. For the Claude stack this defaults to **Voyage AI** (Anthropic's recommended partner); a base URL leaves it provider-swappable (OpenAI / Google / Cohere) with no code change. The wrapper lives in `memory/embedding_client.py` and is called *only* by the Memory Manager (§2.7.4). Vector **dimensionality follows from the chosen model and fixes the PGVector column width**, so it must be pinned per deployment — changing embedding model means a re-index, not a hot swap.
+- **Embeddings are produced by an external provider API, not by SafeSC.** The LLM provider (Claude) has *no* first-party embeddings endpoint, so the embedding model is a **separate service with a separate, user-supplied key (BYOK, §3.5)**. Base URL and model stay configurable per deployment (`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` may set non-secret defaults), but the **key itself is caller-supplied and never server-stored**. For the Claude stack this defaults to **Voyage AI** (Anthropic's recommended partner); a base URL leaves it provider-swappable (OpenAI / Google / Cohere) with no code change. The wrapper lives in `memory/embedding_client.py` and is called *only* by the Memory Manager (§2.7.4). Vector **dimensionality follows from the chosen model and fixes the PGVector column width**, so it must be pinned per deployment — changing embedding model means a re-index, not a hot swap.
 
 ### 3.3 Memory Safety Boundary (iron rule, extended)
 - Retrieved memory may **inform** LLM reasoning; it may **never** downgrade the current run's severity. A prior `clean` verdict on the same hash is evidence, not an override — because memory is another attacker-poisonable input channel, subject to the same "escalate-only" invariant as §2.5 and §4.3.
@@ -197,19 +197,19 @@ Note: within a single graph run, parallel specialists synchronize via LangGraph 
 ### 3.4 Retention & Garbage Collection
 - **Redis** — TTL-based, already covered (§3.1); no separate job.
 - **PGVector** — differentiated retention: escalated records and known-attack fingerprints are kept indefinitely (their value as a fingerprint library *grows* with time); low-confidence clean records expire on a cycle to keep the index from growing without bound. This mirrors the narrow write scope of §2.7.4 — the store is a threat-intelligence asset, not an audit log.
-- **GC runs as a Kubernetes CronJob**, outside any audit run: a scheduled `depaudit gc` invocation, never triggered by a graph node. Keeping it external preserves §1.3 (every audit run stays finite; maintenance is its own separate finite job) and makes GC cadence an ops concern, tunable without touching the harness. The entry point is a thin `gc` subcommand in `entrypoints/cli.py` that the CronJob calls.
+- **GC runs as a Kubernetes CronJob**, outside any audit run: a scheduled `safesc gc` invocation, never triggered by a graph node. Keeping it external preserves §1.3 (every audit run stays finite; maintenance is its own separate finite job) and makes GC cadence an ops concern, tunable without touching the harness. The entry point is a thin `gc` subcommand in `entrypoints/cli.py` that the CronJob calls.
 
 ### 3.5 Credentials — Bring-Your-Own-Key (BYOK) *(implemented: `credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`)*
 
-Every hosted-model service depaudit calls — the reasoning **LLM** (Claude, used by specialists) and the **embedding** provider (Voyage/compatible, used only by the Memory Manager) — is keyed by the **caller**, not by the depaudit deployment. There is **no server-side or ambient key**; a missing key is a hard error (`MissingCredentialError`), never a silent fall-through to a shared account.
+Every hosted-model service SafeSC calls — the reasoning **LLM** (Claude, used by specialists) and the **embedding** provider (Voyage/compatible, used only by the Memory Manager) — is keyed by the **caller**, not by the SafeSC deployment. There is **no server-side or ambient key**; a missing key is a hard error (`MissingCredentialError`), never a silent fall-through to a shared account.
 
 Intake, one bundle two paths (`UserCredentials`):
 - **API path** (`query`/`audit` over HTTP) — keys arrive in the request; `UserCredentials.from_request(...)`.
-- **CLI / CI path** — keys come from the *caller's own* environment (`DEPAUDIT_LLM_API_KEY`, optionally `DEPAUDIT_EMBEDDING_API_KEY`, plus non-secret `_BASE_URL`/`_MODEL`); `UserCredentials.from_env(...)`. This is still BYOK: the key belongs to whoever runs depaudit.
+- **CLI / CI path** — keys come from the *caller's own* environment (`SAFESC_LLM_API_KEY`, optionally `SAFESC_EMBEDDING_API_KEY`, plus non-secret `_BASE_URL`/`_MODEL`); `UserCredentials.from_env(...)`. This is still BYOK: the key belongs to whoever runs SafeSC.
 
 The embedding key is optional and only required when the memory layer is enabled for the run.
 
-Security invariants (depaudit is a security tool — these are load-bearing):
+Security invariants (SafeSC is a security tool — these are load-bearing):
 1. Keys are `SecretStr`: absent from reprs, logs, tracebacks, and `model_dump()`/`model_dump_json()`.
 2. **Keys never enter `AuditState`**, which is checkpointed to Redis (§3.1) — that would persist a user secret. Credentials travel out of band via injected deps (`build_specialist_deps`) and LangGraph `configurable`, never through a state channel. This is *why* the specialist `LLMClient` was designed as an injected seam (§2.3) rather than a state field.
 3. Keys are never written to PGVector or any report artifact.
@@ -272,7 +272,7 @@ Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is 
 The v1 Stages 0–3 already live under `tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is a new top-level `graph/`. Legend: ✅ built · ◑ partial (seam built, backing store pending) · ⛔ pending.
 
 ```
-depaudit/
+safesc/
 ├── tools/                            # Stages 0–4, deterministic, LLM-free
 │   ├── index/                        # ✅ Stages 0–1
 │   │   ├── core/                     #    discovery.py, normalizer.py, models.py (→ Dependency)
@@ -331,7 +331,7 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 | Embeddings | Voyage AI (configurable) | Separate provider, **BYOK key** (§3.5); Claude has no embeddings endpoint (§3.2) |
 | LLM | Claude API | Structured output + prompt caching; **BYOK key** per caller (§3.5) |
 | Credentials | BYOK (`SecretStr`) | Caller-supplied per invocation; never in state/logs/PGVector (§3.5) |
-| Scheduled maintenance | Kubernetes CronJob | PGVector GC as an external finite job — `depaudit gc` (§3.4) |
+| Scheduled maintenance | Kubernetes CronJob | PGVector GC as an external finite job — `safesc gc` (§3.4) |
 | Lockfile parsing | Syft → CycloneDX | Unchanged |
 | CVE source | OSV.dev | Unchanged |
 | Reports | SARIF + Markdown + JSON | Unchanged |
@@ -360,7 +360,7 @@ Resolved since v2.1:
 Resolved at design level in v2.3 (specified, not yet coded):
 - [x] Harness Layer components — four wrappers specified (§2.7); the **Memory Manager** (§2.7.4) is the single read/write point enforcing §3.3.
 - [x] Embedding source — **external provider API, BYOK key** (§3.5) (Voyage AI for the Claude stack; base-URL/model configurable, §3.2). Dimensionality pins to the chosen model.
-- [x] Long-term store GC — **Kubernetes CronJob** invoking `depaudit gc`, external to audit runs (§3.4).
+- [x] Long-term store GC — **Kubernetes CronJob** invoking `safesc gc`, external to audit runs (§3.4).
 
 Resolved in v2.4 (coded):
 - [x] Credentials model — **BYOK** for all hosted-model services (`credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`, §3.5); keys are `SecretStr`, injected, never in `AuditState`/logs/PGVector, no ambient fallback.
@@ -370,7 +370,7 @@ Resolved in v2.5 (coded):
 - [x] Memory read/write paths — implemented (`graph/harness/memory_manager.py`): immutable `MemoryContext` (prompt-only), single write at `report_agent` tail, max-wins + severity-decrease anomaly flagging, narrow write scope.
 
 Resolved in v2.6 (coded):
-- [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `depaudit gc` (§3.4) end-to-end.
+- [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `safesc gc` (§3.4) end-to-end.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
