@@ -1,0 +1,125 @@
+name: Bug report
+description: Report a defect in depaudit / SafeSC (wrong verdict, crash, parsing error, etc.)
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please fill in the sections below so we can reproduce it quickly.
+
+        ⚠️ **Do not paste secrets.** depaudit is bring-your-own-key — never include your
+        `DEPAUDIT_LLM_API_KEY`, embedding key, or any registry token in logs or output.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues and this has not already been reported.
+          required: true
+        - label: I confirmed no API keys, tokens, or other secrets are included below.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: depaudit reported X, but I expected Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The exact command(s) and, if possible, a minimal lockfile/repo that triggers the bug.
+      placeholder: |
+        1. Run `depaudit audit ./my-repo --format all`
+        2. On dependency `npm:left-pad@1.3.0`
+        3. See the error / wrong result
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the pipeline is involved?
+      options:
+        - "Stage 0-1: discovery / parsing (tools/index)"
+        - "Stage 2-3: hash verification / cheap signals (tools/scan)"
+        - "Stage 4: LLM specialists (graph/specialists)"
+        - "Scorer / gate decision (graph/report_agent)"
+        - "Reporter (SARIF / Markdown / JSON)"
+        - "CLI / entrypoints"
+        - "GitHub Action (action.yml)"
+        - "Memory / stores (Redis / PGVector)"
+        - "Other / not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: entrypoint
+    attributes:
+      label: How did you run it?
+      placeholder: "e.g. GitHub Action @v1, `depaudit` CLI, or `python -m entrypoints`"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ecosystem
+    attributes:
+      label: Ecosystem(s) involved
+      multiple: true
+      options:
+        - Python (uv / poetry / pip)
+        - npm / pnpm
+        - Cargo (Rust)
+        - Go modules
+        - Maven / Gradle (Java)
+        - Not ecosystem-specific
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste the error output or a report snippet. This is rendered as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: depaudit / SafeSC version
+      placeholder: "e.g. v1.0.0, or a commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "e.g. ubuntu-latest (GitHub Actions), Windows 11, macOS 14"
+    validations:
+      required: false

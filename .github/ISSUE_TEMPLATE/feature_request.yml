@@ -1,0 +1,92 @@
+name: Feature request
+description: Suggest a new capability or improvement for depaudit / SafeSC
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please describe the problem you're trying to solve, not just the
+        solution — it helps us find the best fit for depaudit's deterministic-spine architecture.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I searched existing issues and this has not already been requested.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what's getting in the way today?
+      placeholder: "I'm auditing X and I can't currently ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like depaudit to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the system would this touch?
+      options:
+        - "New ecosystem adapter (tools/index/ecosystems)"
+        - "New / improved trust signal (tools/scan/signals)"
+        - "LLM specialist / Stage 4 analysis (graph/specialists)"
+        - "Scoring / gate policy (graph/report_agent)"
+        - "Reporter output (SARIF / Markdown / JSON)"
+        - "CLI / entrypoints / GitHub Action"
+        - "Memory / stores (Redis / PGVector)"
+        - "Docs / developer experience"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ecosystem
+    attributes:
+      label: Ecosystem (if adding/extending one)
+      options:
+        - Not applicable
+        - Python (uv / poetry / pip)
+        - npm / pnpm
+        - Cargo (Rust)
+        - Go modules
+        - Maven / Gradle (Java)
+        - Other (describe below)
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you've thought about.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, examples, prior art (e.g. how another tool handles this), or a sample lockfile.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to help implement this feature.
+          required: false
