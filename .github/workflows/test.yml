@@ -35,5 +35,23 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run tests with coverage
+        # fail_under=80 (pyproject [tool.coverage.report]) enforces the ruleset's
+        # 80% minimum-coverage gate; the job fails if coverage drops below it.
+        run: >-
+          pytest tests/ -v
+          --cov
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --cov-report=html:htmlcov
+
+      - name: Upload coverage reports
+        # always() so reports upload for inspection even when the coverage gate fails.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-py${{ matrix.python-version }}
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: warn

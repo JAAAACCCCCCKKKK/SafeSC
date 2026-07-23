@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
 # Tier-2 CI gate: deterministic spine + Stage-4 LLM specialists. No Redis/Postgres —
 # both are lazily imported, so `depaudit audit` runs with only a BYOK LLM key (§3.5).
 agent = [
@@ -40,6 +40,16 @@ depaudit = "entrypoints.bootstrap:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["tools", "graph", "entrypoints", "reporter", "memory", "credentials"]
+
+[tool.coverage.report]
+# Enforce the repository ruleset's 80% minimum test-coverage gate in CI.
+fail_under = 80
+show_missing = true
+skip_empty = true
 
 [tool.hatch.build.targets.wheel]
 # Ship the full runtime, not just the frozen Stage 0–3 tools, so the `depaudit`
