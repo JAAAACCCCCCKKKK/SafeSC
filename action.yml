@@ -102,13 +102,29 @@ runs:
         exit 0
 
     # Folded-in publishing so consumers need a single `uses:` step, not three (§CI wrapping).
+    # continue-on-error: uploading to code scanning needs `security-events: write` AND an
+    # environment where code scanning is available (public repo, or private + GitHub
+    # Advanced Security). When that's missing the API returns "Resource not accessible by
+    # integration" — that must NOT fail the audit, whose verdict is already in the exit code
+    # and whose reports are still archived below. The next step surfaces an actionable hint.
     - name: Upload SARIF to code scanning
+      id: sarif
       if: >-
         always() && inputs.upload-sarif == 'true'
         && steps.run.outputs.sarif-produced == 'true'
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.report-dir }}/safesc-report.sarif
+
+    - name: Explain a skipped SARIF upload
+      if: >-
+        always() && inputs.upload-sarif == 'true'
+        && steps.run.outputs.sarif-produced == 'true'
+        && steps.sarif.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning title=SafeSC SARIF upload skipped::Could not upload the SARIF report to GitHub code scanning. This does not affect the audit result (see the exit code) or the archived report artifact. Common causes: (1) the job lacks 'permissions: security-events: write'; (2) the repository is private without GitHub Advanced Security / code scanning enabled. Set upload-sarif: false to silence this."
 
     - name: Archive report artifacts
       if: always() && inputs.upload-artifact == 'true'

@@ -75,6 +75,13 @@ To pin a specific **model** or route to a custom **endpoint**, add the optional 
 
 **Output:** `exit-code` — `0` = gate pass, `1` = gate fail on a critical finding.
 
+> **SARIF upload (code scanning).** `upload-sarif: true` needs the job to grant
+> `permissions: security-events: write` **and** a repo where code scanning is available
+> (public repos, or private repos with GitHub Advanced Security). If either is missing,
+> GitHub returns `Resource not accessible by integration`; SafeSC treats this as
+> **non-fatal** — it prints a warning, still archives the report artifact, and the audit's
+> exit code is unaffected. Set `upload-sarif: false` to skip the upload entirely.
+
 ---
 
 ## Choosing your model & provider
