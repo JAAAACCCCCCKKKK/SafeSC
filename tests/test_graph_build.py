@@ -1,4 +1,4 @@
-"""Unit tests for graph/build.py — the `run()` seam both entrypoints call (§6.1.4).
+"""Unit tests for graph/build.py — the `run()` seam the CLI entrypoint calls (§6.1.4).
 
 The real graph compile needs LangGraph and the LLM client needs anthropic; neither is a
 test dependency. `run()` exposes an injectable `graph_factory`, and `build_specialist_deps`

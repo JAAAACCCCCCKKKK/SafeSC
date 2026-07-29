@@ -152,20 +152,6 @@ parse) and `scan` (verify / signals).
 
 ---
 
-## HTTP API
-
-`safesc` also ships a FastAPI app (`entrypoints/api.py`) exposing `audit`, `query`, and a
-`webhook`. Credentials are passed per request as headers, never stored server-side:
-
-```
-X-LLM-Api-Key:   <your key>
-X-LLM-Provider:  openai            # optional
-X-LLM-Model:     gpt-4o            # optional
-X-LLM-Base-Url:  https://…/v1      # optional
-```
-
----
-
 ## Supported ecosystems
 
 Python (uv / poetry / pip), npm / pnpm, Cargo (Rust), Go modules, and Maven / Gradle (Java).

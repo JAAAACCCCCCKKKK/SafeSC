@@ -61,7 +61,7 @@ class SignalOrigin(str, Enum):
 
 
 class RunMode(str, Enum):
-    AUDIT = "audit"    # CI/webhook, produces a gate + exit code
+    AUDIT = "audit"    # CI trigger, produces a gate + exit code
     QUERY = "query"    # interactive, evidence only, no gate (§1.3)
 
 

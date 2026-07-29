@@ -27,7 +27,7 @@ The single most important thing to understand before reading further: **the agen
 | Cache | In-process / filesystem / S3 | Redis (short-term) + PGVector (long-term) |
 | Concurrency | Local per-host semaphores | Redis-backed distributed semaphores |
 
-**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** SafeSC gains an agent mode, but every execution is still **triggered and finite** — a CI event, a webhook, or an explicit CLI/API query — never a persistent monitor.
+**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** SafeSC gains an agent mode, but every execution is still **triggered and finite** — a CI event or an explicit CLI query — never a persistent monitor. (A hosted HTTP API is out of scope for this repo; it lives in a separate private repo that only exposes endpoints / a Docker image.)
 
 ### 0.1 Build Status
 
@@ -47,7 +47,7 @@ The single most important thing to understand before reading further: **the agen
 | Memory store clients (Redis + PGVector) | `memory/short_term.py`, `memory/long_term.py` | ✅ implemented, unit-tested (§3.1, §3.2); consumed by MemoryManager via injection |
 | Live store deployment (Redis/Postgres instance, checkpointer schema, pgvector index) | infra | ⛔ deployment wiring only, not logic |
 | Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
-| Entrypoints (FastAPI `api.py` + `cli.py`) | `entrypoints/` | ✅ implemented (api unit-tested via `run()` seam) |
+| Entrypoints (`cli.py`) | `entrypoints/` | ✅ implemented (CLI; the HTTP API lives in a separate private repo) |
 | Reporter (SARIF / Markdown / JSON) | `reporter/` | ✅ implemented, unit-tested (§6, §7) |
 
 Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
@@ -63,7 +63,7 @@ Discover dependency lockfiles, traverse dependencies, evaluate trust across five
 Unchanged from v1: reuse Syft/OSV.dev; core value is multi-dimensional trust scoring + LLM intent analysis; blind-spot coverage is malicious behavioral intent + broken provenance. v2 additionally reuses LangGraph/LangChain instead of building a bespoke agent runtime.
 
 ### 1.3 Hard Scope Constraints (revised)
-- **Two entrypoints, both finite**: `audit` (CI/webhook trigger, full repo, produces exit code) and `query` (interactive, single question, evidence only — **no exit code, no gate**). See §6.2.
+- **Two run modes, both finite**: `audit` (CI trigger, full repo, produces exit code) and `query` (interactive, single question, evidence only — **no exit code, no gate**). See §6.2.
 - **Multi-language support**: ecosystem logic stays plugin-based (unchanged).
 - **Custom registry support**: unchanged.
 - **Bounded agent autonomy**: agents choose *which Stage-4 specialists to invoke and in what order*. They may **not** reorder or skip Stages 0–3, invent gate logic, or bypass the scorer. See §2.5 for why this boundary is a security property, not just tidiness.
@@ -293,15 +293,15 @@ safesc/
 │   │                                 #    (no popularity/vulnerability agent — §2.3)
 │   ├── llm_client.py                 # ✅ concrete BYOK Claude client (§3.5)
 │   ├── report_agent.py               # ✅ terminal reducer == scorer, sole decision writer (§2.4)
-│   ├── build.py                      # ✅ graph assembly + run() seam both entrypoints call (§6.1.4)
+│   ├── build.py                      # ✅ graph assembly + run() seam the CLI entrypoint calls (§6.1.4)
 │   └── harness/                      # ✅ constraint_validator.py, auto_repair.py,
 │                                     #    session_manager.py, memory_manager.py (§2.7)
 ├── memory/                           # ✅ short_term.py (ShortTermStore/Redis, §3.1),
 │                                     #    long_term.py (PGVectorStore, §3.2/§3.4),
 │                                     #    embedding_client.py (BYOK seam, §3.2/§3.5).
 │                                     #    All injected into MemoryManager; live store = infra (⛔)
-├── entrypoints/                      # ✅ api.py (FastAPI: audit + query + webhook),
-│                                     #    cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
+├── entrypoints/                      # ✅ cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
+│                                     #    (HTTP API is out of scope for this repo — see below)
 ├── reporter/                         # ✅ SARIF / Markdown / JSON — build_report + 3 pure renderers (§6, §7)
 └── credentials.py                    # ✅ BYOK credentials for LLM + embedding services (§3.5)
 ```
@@ -312,7 +312,7 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
 2. **`tools/` stays LLM-free — including `tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
 3. **Adding an ecosystem still means one adapter under `tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
-4. **The graph is the core; `entrypoints/` are thin.** CLI and API both call `graph.build.run(request)`; neither contains audit logic and the CLI does not shell out to the HTTP server.
+4. **The graph is the core; `entrypoints/` are thin.** The CLI calls `graph.build.run(request)`; it contains no audit logic. (Any external HTTP API is a separate private repo that also calls the same `run()` seam — it is not part of this repo.)
 5. **v1 layering preserved:** `tools/scan/signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 6. **Redis and PGVector have exactly one reader/writer: the Memory Manager (§2.7.4).** No node imports a store or embedding client directly; specialists see memory only as an injected read-only `MemoryContext`, and long-term persistence happens at exactly one point (tail of `report_agent`). This is the structural form of the §3.3 escalate-only-memory rule.
 7. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).
@@ -323,7 +323,6 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| API | FastAPI | Async, typed models, serves `audit` + `query` |
 | Orchestration | LangGraph | Explicit state machine; native fan-out/fan-in; checkpointing |
 | Tool/chain wrapping | LangChain | `@tool` wrapping of Stages 0–3; structured-output parsers |
 | Short-term memory | Redis | Checkpointer, distributed semaphores, hot cache (v1 L1/L2) |

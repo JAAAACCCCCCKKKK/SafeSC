@@ -29,7 +29,7 @@ NODE_FULL_SPINE_ENTRY = NODE_INDEX               # full-repo ingestion (discover
 
 
 class AuditRequest(BaseModel):
-    """What the FastAPI entrypoints hand the graph."""
+    """What the CLI entrypoint / GitHub Action hands the graph."""
 
     mode: RunMode
     target: str = Field(..., description="A package spec, a git URL, or a repo/lockfile path")

@@ -1,5 +1,5 @@
-"""graph/build.py — assembles the graph and exposes `run()`, the one seam both
-entrypoints call (§6.1.4: the graph is the core; entrypoints are thin).
+"""graph/build.py — assembles the graph and exposes `run()`, the one seam the CLI
+entrypoint calls (§6.1.4: the graph is the core; entrypoints are thin).
 
 Composes the harness per §2.7: specialist nodes are auto_repaired_node(outer) around a
 constraint-validated(inner) LLM call; spine tools are with_retry-wrapped. BYOK creds
