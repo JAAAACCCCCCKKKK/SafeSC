@@ -25,8 +25,14 @@ import sys
 from entrypoints.cli import main as cli_main
 from graph.harness.session_manager import new_ulid
 
-# Packages whose absence means the optional `agent` extra was not installed.
-_AGENT_EXTRA_MODULES = ("langgraph", "anthropic")
+# Optional modules whose absence should produce a friendly install hint instead of a raw
+# traceback, mapped to the extra that provides each: `agent` is the orchestration extra;
+# `anthropic` / `openai` are the per-provider SDK extras (install the one you configure).
+_OPTIONAL_MODULE_EXTRAS = {
+    "langgraph": "agent",
+    "anthropic": "anthropic",
+    "openai": "openai",
+}
 
 
 class LocalSession:
@@ -53,10 +59,13 @@ def build_local_runtime():
 
 
 def _explain_missing_extra(module_name: str) -> None:
+    extra = _OPTIONAL_MODULE_EXTRAS.get(module_name, module_name)
+    # `agent` is orchestration; provider SDKs also need the agent extra alongside them.
+    install = "safesc[agent]" if extra == "agent" else f"safesc[agent,{extra}]"
     print(
         f"safesc: the tier-2 audit path needs the '{module_name}' package, which is part "
-        "of the optional 'agent' extra.\n"
-        "Install it with:  pip install 'safesc[agent]'",
+        f"of the optional '{extra}' extra.\n"
+        f"Install it with:  pip install '{install}'",
         file=sys.stderr,
     )
 
@@ -78,14 +87,14 @@ def main(argv=None) -> int:
     """Console-script entry point for ``safesc`` (audit | query | gc).
 
     Builds the store-free runtime and delegates to the injectable ``cli.main``. Missing
-    optional dependencies (LangGraph / Anthropic) are reported with an actionable message
-    rather than a raw traceback.
+    optional dependencies (LangGraph, or the chosen provider SDK) are reported with an
+    actionable message rather than a raw traceback.
     """
     _make_console_utf8_safe()
     try:
         tools, session, memory = build_local_runtime()
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
-        if exc.name and exc.name.split(".")[0] in _AGENT_EXTRA_MODULES:
+        if exc.name and exc.name.split(".")[0] in _OPTIONAL_MODULE_EXTRAS:
             _explain_missing_extra(exc.name.split(".")[0])
             return 2
         raise
@@ -94,7 +103,7 @@ def main(argv=None) -> int:
         return cli_main(argv, tools=tools, session=session, memory=memory)
     except ModuleNotFoundError as exc:
         top = exc.name.split(".")[0] if exc.name else ""
-        if top in _AGENT_EXTRA_MODULES:
+        if top in _OPTIONAL_MODULE_EXTRAS:
             _explain_missing_extra(top)
             return 2
         raise

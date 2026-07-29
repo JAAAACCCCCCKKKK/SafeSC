@@ -107,9 +107,20 @@ def test_build_local_runtime_is_store_free():
     assert tools is not None
 
 
-def test_explain_missing_extra(capsys):
+def test_explain_missing_extra_orchestration(capsys):
     bootstrap._explain_missing_extra("langgraph")
-    assert "agent" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "safesc[agent]" in err
+
+
+def test_explain_missing_extra_provider(capsys):
+    # A provider SDK maps to its own extra, installed alongside the agent extra.
+    bootstrap._explain_missing_extra("anthropic")
+    err = capsys.readouterr().err
+    assert "safesc[agent,anthropic]" in err
+
+    bootstrap._explain_missing_extra("openai")
+    assert "safesc[agent,openai]" in capsys.readouterr().err
 
 
 def test_console_utf8_safe_is_noop_safe():

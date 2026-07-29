@@ -76,10 +76,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install with the agent extra (LangGraph + Anthropic)
+      - name: Install the agent extra + Anthropic provider (matches SAFESC_LLM_PROVIDER below)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[agent]"
+          python -m pip install -e ".[agent,anthropic]"
 
       - name: Create clean fixture (virtual root only → 0 real deps)
         shell: bash
