@@ -7,14 +7,15 @@ from collections import deque
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 _CRATES_URL = "https://static.crates.io/crates/{name}/{name}-{version}.crate"
 
 
 def parse(path: Path) -> list[Dependency]:
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        # BOM-aware decode + tomllib.loads so a UTF-16 Cargo.lock is not silently empty.
+        data = tomllib.loads(read_text(path))
     except Exception:
         return []
 

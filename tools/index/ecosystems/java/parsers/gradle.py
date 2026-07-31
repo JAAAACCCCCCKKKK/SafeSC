@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 _MVN_CENTRAL = (
     "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}"
@@ -16,7 +17,7 @@ def parse(path: Path) -> list[Dependency]:
     if path.name not in ("gradle.lockfile", "buildscript-gradle.lockfile"):
         return []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_text(path)
     except OSError:
         return []
 

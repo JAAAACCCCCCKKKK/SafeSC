@@ -113,6 +113,50 @@ def test_index_node_degrades_on_parse_failure():
     assert "parse failed" in out["degraded_notes"][0].reason
 
 
+def test_index_node_flags_discovered_but_empty_lockfile():
+    # A discovered lockfile that parses to zero deps (e.g. a mis-encoded requirements.txt)
+    # must degrade the run instead of passing as a silent clean 0-dep audit.
+    tools = _tools(
+        discover=lambda target: [LockfileRef(path="requirements.txt", ecosystem="python")],
+        parse=lambda lockfiles: [],
+    )
+    out = index_node(AuditState(target="."), tools)
+    assert out["dependencies"] == []
+    notes = out["degraded_notes"]
+    assert len(notes) == 1
+    assert notes[0].node == NODE_INDEX
+    assert "requirements.txt" in notes[0].reason
+    assert "0 dependencies" in notes[0].reason
+
+
+def test_index_node_does_not_flag_empty_manifest_only_file():
+    # pyproject.toml / setup.cfg legitimately declare zero *pinned* deps; no warning.
+    tools = _tools(
+        discover=lambda target: [
+            LockfileRef(path="pyproject.toml", ecosystem="python"),
+            LockfileRef(path="setup.cfg", ecosystem="python"),
+        ],
+        parse=lambda lockfiles: [],
+    )
+    out = index_node(AuditState(target="."), tools)
+    assert out == {"dependencies": []}
+
+
+def test_index_node_flags_only_the_empty_lockfile_when_mixed():
+    dep = _dep()  # lockfile_path == Path("r.txt")
+    tools = _tools(
+        discover=lambda target: [
+            LockfileRef(path="r.txt", ecosystem="python"),            # produced a dep → ok
+            LockfileRef(path="go.sum", ecosystem="go"),               # empty → flagged
+        ],
+        parse=lambda lockfiles: [dep],
+    )
+    out = index_node(AuditState(target="."), tools)
+    assert out["dependencies"] == [dep]
+    assert len(out["degraded_notes"]) == 1
+    assert "go.sum" in out["degraded_notes"][0].reason
+
+
 def test_hash_verify_node_aggregates_and_degrades_per_dep():
     good, bad = _dep("good"), _dep("bad")
 

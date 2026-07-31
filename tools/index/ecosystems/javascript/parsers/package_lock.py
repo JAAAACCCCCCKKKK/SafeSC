@@ -7,6 +7,7 @@ from collections import deque
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 
 def _package_json_direct(directory: Path) -> set[str]:
@@ -14,7 +15,7 @@ def _package_json_direct(directory: Path) -> set[str]:
     if not pkg.exists():
         return set()
     try:
-        data = json.loads(pkg.read_text(encoding="utf-8"))
+        data = json.loads(read_text(pkg))
     except (OSError, json.JSONDecodeError):
         return set()
     direct: set[str] = set()
@@ -103,7 +104,7 @@ def _parse_v1(deps: dict, path: Path, direct_names: set[str],
 
 def parse(path: Path) -> list[Dependency]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
 

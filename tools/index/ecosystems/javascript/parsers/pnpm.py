@@ -5,12 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 
 def parse(path: Path) -> list[Dependency]:
     try:
         import yaml  # type: ignore[import-untyped]
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(read_text(path))
     except Exception:
         return []
 

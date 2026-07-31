@@ -7,12 +7,14 @@ from collections import deque
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 
 def parse(path: Path) -> list[Dependency]:
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        # Decode via read_text (BOM-aware) then tomllib.loads, so a UTF-16 lockfile is
+        # parsed rather than silently yielding zero dependencies.
+        data = tomllib.loads(read_text(path))
     except Exception:
         return []
 

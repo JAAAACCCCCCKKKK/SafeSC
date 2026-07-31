@@ -183,10 +183,52 @@ def load_default_tools() -> InjectedTools:
 # =============================================================================
 
 
+# Lockfiles that legitimately declare zero *pinned* dependencies. These are manifests, not
+# resolved lockfiles, so the python adapter returns [] for them by design — an empty parse
+# is expected and must NOT raise a warning. Any *other* discovered file that yields zero
+# deps is treated as a coverage gap (most often a mis-encoded file, e.g. a UTF-16
+# requirements.txt) so it cannot pass as a silent clean audit (§8 graceful degradation).
+_MANIFEST_ONLY_LOCKFILES: frozenset[str] = frozenset({"pyproject.toml", "setup.cfg"})
+
+
+def _empty_lockfile_notes(lockfiles: list[LockfileRef], deps: list[Dependency]) -> list[DegradedNote]:
+    """Flag any discovered lockfile that parsed to zero dependencies but should not have.
+
+    A discovered-but-empty lockfile is the signature of an encoding/format problem (the
+    reported case: a UTF-16-encoded requirements.txt read as UTF-8 → 0 deps). Surfacing it
+    as a degraded note makes the scorer mark the run incomplete instead of reporting a false
+    "0 deps / CLEAN" pass — a silent under-report is unacceptable for a security gate."""
+    from pathlib import Path
+
+    produced = {
+        Path(d.lockfile_path)
+        for d in deps
+        if getattr(d, "lockfile_path", None) is not None
+    }
+    notes: list[DegradedNote] = []
+    for lf in lockfiles:
+        if Path(lf.path) in produced:
+            continue
+        if Path(lf.path).name.lower() in _MANIFEST_ONLY_LOCKFILES:
+            continue
+        notes.append(
+            DegradedNote(
+                node=NODE_INDEX,
+                reason=(
+                    f"discovered lockfile '{lf.path}' but parsed 0 dependencies — likely a "
+                    f"file-encoding (e.g. UTF-16) or format problem; it was not counted, so "
+                    f"this audit is treated as incomplete rather than a silent clean pass"
+                ),
+            )
+        )
+    return notes
+
+
 def index_node(state: AuditState, tools: InjectedTools) -> dict:
     """Stages 0+1 → discover lockfiles, then parse/normalize into the dependency set.
     Merged because they are always adjacent (no gate between). Degradation is per-stage:
-    discovery and parse failures each yield an empty set with their own note."""
+    discovery and parse failures each yield an empty set with their own note; a lockfile
+    that is discovered but parses to zero deps is flagged as a coverage gap."""
     try:
         lockfiles = tools.discover(state.target)
     except Exception as exc:
@@ -194,10 +236,17 @@ def index_node(state: AuditState, tools: InjectedTools) -> dict:
         return {"dependencies": [], **emit_degraded(NODE_INDEX, f"discovery failed: {exc}")}
     try:
         deps = tools.parse(lockfiles)
-        return {"dependencies": deps}
     except Exception as exc:
         logger.exception("parse failed")
         return {"dependencies": [], **emit_degraded(NODE_INDEX, f"parse failed: {exc}")}
+
+    out: dict = {"dependencies": deps}
+    notes = _empty_lockfile_notes(lockfiles, deps)
+    if notes:
+        for note in notes:
+            logger.warning("index: %s", note.reason)
+        out["degraded_notes"] = notes
+    return out
 
 
 def hash_verify_node(state: AuditState, tools: InjectedTools) -> dict:

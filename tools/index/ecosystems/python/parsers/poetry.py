@@ -7,6 +7,7 @@ from collections import deque
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 
 def _direct_from_pyproject(lockfile_dir: Path) -> set[str]:
@@ -14,8 +15,7 @@ def _direct_from_pyproject(lockfile_dir: Path) -> set[str]:
     if not pyproject.exists():
         return set()
     try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
+        data = tomllib.loads(read_text(pyproject))
     except Exception:
         return set()
 
@@ -39,8 +39,7 @@ def _direct_from_pyproject(lockfile_dir: Path) -> set[str]:
 
 def parse(path: Path) -> list[Dependency]:
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        data = tomllib.loads(read_text(path))
     except Exception:
         return []
 

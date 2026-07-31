@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 _DEP_LINE_RE = re.compile(r"^\s+(\S+)\s+(\S+)(.*)")
 
@@ -15,7 +16,7 @@ def _load_gosum(gosum: Path) -> dict[tuple[str, str], str]:
     if not gosum.exists():
         return hashes
     try:
-        for line in gosum.read_text(encoding="utf-8").splitlines():
+        for line in read_text(gosum).splitlines():
             parts = line.strip().split()
             if len(parts) != 3:
                 continue
@@ -29,7 +30,7 @@ def _load_gosum(gosum: Path) -> dict[tuple[str, str], str]:
 
 def _parse_gomod(path: Path) -> list[Dependency]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_text(path)
     except OSError:
         return []
 
@@ -81,7 +82,7 @@ def _parse_gosum_standalone(path: Path) -> list[Dependency]:
     result: list[Dependency] = []
     seen: set[tuple[str, str]] = set()
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in read_text(path).splitlines():
             parts = line.strip().split()
             if len(parts) != 3:
                 continue

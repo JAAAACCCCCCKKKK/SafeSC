@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 # PEP 503-ish distribution name.
 _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
@@ -33,8 +34,10 @@ def parse(path: Path, *, _seen: set | None = None) -> list[Dependency]:
     _seen.add(resolved)
 
     try:
-        # utf-8-sig transparently strips a leading BOM so the first dependency isn't lost.
-        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+        # read_text sniffs the BOM and decodes UTF-8/16/32 so a UTF-16 requirements.txt
+        # (e.g. from `pip freeze > requirements.txt` in Windows PowerShell) is not silently
+        # dropped as NUL-interleaved garbage.
+        raw = read_text(path)
     except OSError:
         return []
 

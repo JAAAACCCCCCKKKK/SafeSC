@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 
 from tools.index.core.models import Dependency
+from tools.index.core.text_io import read_text
 
 
 def parse(path: Path) -> list[Dependency]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
 
