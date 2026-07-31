@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from credentials import UserCredentials
+from security.credentials import UserCredentials
 from graph.harness.auto_repair import RetryPolicy, auto_repaired_node, with_retry
 from graph.harness.constraint_validator import ConstraintValidator
 from graph.report_agent import ScoreConfig, add_report

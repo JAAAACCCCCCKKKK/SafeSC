@@ -4,7 +4,7 @@
 
 > **v2.5 (harness + memory landed).** The four Harness components (§2.7) and the Memory Manager's read/write paths are now **implemented and unit-tested**, moving §2.7 and §3 from design to code: `graph/harness/{constraint_validator,auto_repair,session_manager,memory_manager}.py`. The constraint validator's repair loop is independent of auto-repair (no retry storm); semaphores use the self-healing ZSET-token pattern; memory persists only escalated + high-popularity-benign records with max-wins/anomaly-flagging. The stores themselves (a live Redis/PGVector deployment) and the FastAPI entrypoints remain the last ⛔ items. Builds on v2.4 (BYOK).
 
-> **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; SafeSC holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
+> **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; SafeSC holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `security/credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
 
 > **v2.3 (design sync).** The Harness Layer (§2.7) is expanded from three bullets into four specified components, adding a **Memory Manager** (§2.7.4) as the single read/write point for the §3 stores. The memory read/write paths, embedding source, and GC strategy are now pinned: embeddings come from an **external provider API (BYOK, see §3.5)** (Voyage AI for the Claude stack — Anthropic has no first-party embeddings endpoint — kept provider-swappable, §3.2); long-term GC runs as a **Kubernetes CronJob** (§3.4). These are **design-level** decisions; the harness and memory modules remain ⛔ unimplemented (§0.1). Builds on v2.2's landed agent-layer code (state, router, spine, specialists, scorer).
 
@@ -40,7 +40,7 @@ The single most important thing to understand before reading further: **the agen
 | Deterministic spine (Stage 0→3 + gate) | `graph/spine.py` | ✅ implemented, unit-tested |
 | Stage-4 specialists (Identity/Behavior/Provenance) | `graph/specialists/` | ✅ implemented, unit-tested |
 | Scorer / report_agent | `graph/report_agent.py` | ✅ implemented, unit-tested |
-| BYOK credentials + LLM client | `credentials.py`, `graph/llm_client.py` | ✅ implemented, unit-tested (§3.5) |
+| BYOK credentials + LLM client | `security/credentials.py`, `graph/llm_client.py` | ✅ implemented, unit-tested (§3.5) |
 | Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ✅ implemented, unit-tested (§2.7) |
 | Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
 | Graph assembly + `run()` seam | `graph/build.py` | ✅ implemented, unit-tested (§6.1.4) |
@@ -199,7 +199,7 @@ Note: within a single graph run, parallel specialists synchronize via LangGraph 
 - **PGVector** — differentiated retention: escalated records and known-attack fingerprints are kept indefinitely (their value as a fingerprint library *grows* with time); low-confidence clean records expire on a cycle to keep the index from growing without bound. This mirrors the narrow write scope of §2.7.4 — the store is a threat-intelligence asset, not an audit log.
 - **GC runs as a Kubernetes CronJob**, outside any audit run: a scheduled `safesc gc` invocation, never triggered by a graph node. Keeping it external preserves §1.3 (every audit run stays finite; maintenance is its own separate finite job) and makes GC cadence an ops concern, tunable without touching the harness. The entry point is a thin `gc` subcommand in `entrypoints/cli.py` that the CronJob calls.
 
-### 3.5 Credentials — Bring-Your-Own-Key (BYOK) *(implemented: `credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`)*
+### 3.5 Credentials — Bring-Your-Own-Key (BYOK) *(implemented: `security/credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`)*
 
 Every hosted-model service SafeSC calls — the reasoning **LLM** (Claude, used by specialists) and the **embedding** provider (Voyage/compatible, used only by the Memory Manager) — is keyed by the **caller**, not by the SafeSC deployment. There is **no server-side or ambient key**; a missing key is a hard error (`MissingCredentialError`), never a silent fall-through to a shared account.
 
@@ -303,7 +303,7 @@ safesc/
 ├── entrypoints/                      # ✅ cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
 │                                     #    (HTTP API is out of scope for this repo — see below)
 ├── reporter/                         # ✅ SARIF / Markdown / JSON — build_report + 3 pure renderers (§6, §7)
-└── credentials.py                    # ✅ BYOK credentials for LLM + embedding services (§3.5)
+└── security/                         # ✅ credentials.py — BYOK credentials for LLM + embedding services (§3.5)
 ```
 
 Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
@@ -362,7 +362,7 @@ Resolved at design level in v2.3 (specified, not yet coded):
 - [x] Long-term store GC — **Kubernetes CronJob** invoking `safesc gc`, external to audit runs (§3.4).
 
 Resolved in v2.4 (coded):
-- [x] Credentials model — **BYOK** for all hosted-model services (`credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`, §3.5); keys are `SecretStr`, injected, never in `AuditState`/logs/PGVector, no ambient fallback.
+- [x] Credentials model — **BYOK** for all hosted-model services (`security/credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`, §3.5); keys are `SecretStr`, injected, never in `AuditState`/logs/PGVector, no ambient fallback.
 
 Resolved in v2.5 (coded):
 - [x] Harness Layer — all four components implemented and unit-tested (§2.7): constraint validator (schema+semantic, independent repair loop), auto-repair (transient-only, no retry storm), session manager (ULID + self-healing ZSET semaphores), memory manager (§2.7.4).

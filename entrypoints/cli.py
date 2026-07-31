@@ -12,7 +12,7 @@ import argparse
 import logging
 import sys
 
-from credentials import MissingCredentialError, UserCredentials
+from security.credentials import MissingCredentialError, UserCredentials
 from graph import build as graph_build
 from graph.router import AuditRequest
 from graph.state import RunMode

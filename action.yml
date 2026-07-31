@@ -61,6 +61,47 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # Preflight the two things that make a later SARIF upload fail, and warn NOW (before the
+    # slow install + audit) instead of only after the upload. A read probe of the
+    # code-scanning API with the job token distinguishes both causes by its 403 message:
+    #   * "Resource not accessible by integration" → missing security-events: write
+    #   * "Advanced Security must be enabled …"     → code scanning not available (private, no GHAS)
+    # This never fails the run — it only emits ::warning:: annotations.
+    - name: Preflight SARIF / code scanning readiness
+      if: >-
+        inputs.upload-sarif == 'true'
+        && (inputs.format == 'all' || inputs.format == 'sarif')
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set +e
+        url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/code-scanning/analyses?per_page=1"
+        code=$(curl -sS -o /tmp/safesc_cs.json -w '%{http_code}' \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "$url")
+        body="$(cat /tmp/safesc_cs.json 2>/dev/null)"
+        case "$code" in
+          200|404)
+            echo "SafeSC preflight: code scanning reachable (HTTP $code); the SARIF upload should succeed."
+            ;;
+          403)
+            if printf '%s' "$body" | grep -qi "advanced security"; then
+              echo "::warning title=SafeSC: code scanning not available::The SARIF report will not reach GitHub code scanning. This repository does not have code scanning enabled (private repositories require GitHub Advanced Security). The audit still runs and its report is archived as an artifact. Set upload-sarif: false to silence this."
+            else
+              echo "::warning title=SafeSC: missing security-events permission::The SARIF report will not reach GitHub code scanning. The workflow's GITHUB_TOKEN lacks 'security-events: write' — add it to the job (or workflow) 'permissions:' block. The audit still runs and its report is archived as an artifact."
+            fi
+            ;;
+          000)
+            echo "::notice title=SafeSC::Could not reach the code scanning API for a preflight check; will attempt the SARIF upload anyway."
+            ;;
+          *)
+            echo "::warning title=SafeSC: code scanning preflight inconclusive::Unexpected HTTP $code from the code scanning API. The SARIF upload may fail; if it does it is non-fatal and the report is still archived."
+            ;;
+        esac
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:

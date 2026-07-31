@@ -1,4 +1,4 @@
-"""credentials.py — Bring-Your-Own-Key (BYOK) credentials for hosted-model services (§3.5).
+"""security/credentials.py — Bring-Your-Own-Key (BYOK) credentials for hosted-model services (§3.5).
 
 Bundles the caller-supplied reasoning-LLM and embedding keys into an immutable
 `UserCredentials`, threaded to the graph by injection only, never through `AuditState`.

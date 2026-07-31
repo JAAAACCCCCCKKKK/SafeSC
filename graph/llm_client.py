@@ -19,7 +19,7 @@ import logging
 import re
 from typing import Callable, Optional
 
-from credentials import LLMCredentials, UserCredentials
+from security.credentials import LLMCredentials, UserCredentials
 from graph.specialists.base import LLMClient, SpecialistDeps
 from graph.state import LLMOutput
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from credentials import EmbeddingCredentials
+from security.credentials import EmbeddingCredentials
 
 logger = logging.getLogger("safesc.embedding")
 

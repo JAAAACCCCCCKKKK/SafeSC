@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from credentials import (
+from security.credentials import (
     MissingCredentialError,
     PROVIDER_DEFAULT_MODELS,
     UserCredentials,

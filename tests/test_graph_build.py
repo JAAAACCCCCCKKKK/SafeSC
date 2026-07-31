@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from credentials import UserCredentials
+from security.credentials import UserCredentials
 from graph import build as gb
 from graph.build import RunConfig, RunResult, _shape_result, retrying_tools
 from graph.router import AuditRequest

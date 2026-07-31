@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from credentials import LLMCredentials, UserCredentials
+from security.credentials import LLMCredentials, UserCredentials
 from graph import llm_client as lc
 from graph.state import LLMOutput
 

@@ -49,7 +49,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 branch = true
-source = ["tools", "graph", "entrypoints", "reporter", "memory", "credentials"]
+source = ["tools", "graph", "entrypoints", "reporter", "memory", "security"]
 
 [tool.coverage.report]
 # Enforce the repository ruleset's 80% minimum test-coverage gate in CI.
@@ -59,7 +59,6 @@ skip_empty = true
 
 [tool.hatch.build.targets.wheel]
 # Ship the full runtime, not just the frozen Stage 0–3 tools, so the `safesc`
-# console script and its imports (graph, entrypoints, reporter, memory) resolve after
-# a plain `pip install`. `credentials.py` is a top-level module, hence force-include.
-packages = ["tools", "graph", "entrypoints", "reporter", "memory"]
-force-include = { "credentials.py" = "credentials.py" }
+# console script and its imports (graph, entrypoints, reporter, memory, security) resolve
+# after a plain `pip install`. Credential handling lives in the `security` package.
+packages = ["tools", "graph", "entrypoints", "reporter", "memory", "security"]
