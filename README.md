@@ -28,6 +28,7 @@ name: SafeSC
 on: [push]
 
 permissions:
+  actions: read
   contents: read
   security-events: write   # required to upload the SARIF report
 
