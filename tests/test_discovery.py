@@ -99,3 +99,28 @@ def test_no_duplicates(tmp_path: Path) -> None:
     results = discover(tmp_path)
     paths = [f.path for f in results]
     assert len(paths) == len(set(paths))
+
+
+# ── Case-insensitive matching (cross-platform: fnmatch is case-sensitive on Linux) ──
+
+
+@pytest.mark.parametrize("fname", ["Requirements.txt", "REQUIREMENTS.TXT", "requirements.TXT"])
+def test_finds_requirements_regardless_of_case(tmp_path: Path, fname: str) -> None:
+    make_tree(tmp_path, [fname])
+    results = discover(tmp_path)
+    assert any(f.ecosystem == "python" for f in results), (
+        f"{fname} should be discovered on every OS (fnmatch is case-sensitive on Linux)"
+    )
+
+
+def test_finds_uppercase_pipfile_lock(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["Pipfile.LOCK"])
+    results = discover(tmp_path)
+    assert any(f.ecosystem == "python" for f in results)
+
+
+def test_finds_lowercase_cargo_lock(tmp_path: Path) -> None:
+    # Real glob is "Cargo.lock"; a lowercased on-disk name must still match.
+    make_tree(tmp_path, ["cargo.lock"])
+    results = discover(tmp_path)
+    assert any(f.ecosystem == "rust" for f in results)

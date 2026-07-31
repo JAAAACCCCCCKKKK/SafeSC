@@ -18,13 +18,35 @@ from graph.router import AuditRequest
 from graph.state import RunMode
 
 
-def _print_report(result) -> None:
+def _dep_count(result) -> int:
+    """Best-effort dependency count from the run's final state (AuditState or dict)."""
+    state = result.final_state
+    deps = getattr(state, "dependencies", None)
+    if deps is None and isinstance(state, dict):
+        deps = state.get("dependencies")
+    try:
+        return len(deps) if deps is not None else -1
+    except TypeError:
+        return -1
+
+
+def _print_report(result, *, target: str = "") -> None:
     gd = result.gate_decision
     status = "PASS" if result.passed else "FAIL"
     print(f"[{result.run_id}] {status}  overall={gd.overall.name}  exit={result.exit_code}")
     if result.incomplete:
         print("  ⚠ incomplete analysis — result is provisional")
     print(gd.summary)
+    if _dep_count(result) == 0:
+        # A silent "0 deps" almost always means discovery found no lockfile — surface
+        # why, since an empty audit trivially passes and can hide a misconfiguration.
+        where = f" under '{target}'" if target else ""
+        print(
+            f"  ⚠ no dependencies detected{where}. SafeSC found no supported lockfile "
+            "(e.g. requirements.txt, uv.lock, poetry.lock, package-lock.json, "
+            "pnpm-lock.yaml, Cargo.lock, go.sum, pom.xml). Check that the repository is "
+            "checked out before this step and that 'target' points at the project root."
+        )
 
 
 def _emit_reports(result, *, report_dir, report_format) -> None:
@@ -47,7 +69,7 @@ def _run(req: AuditRequest, *, tools, session, memory, config, require_embedding
         print(f"error: {exc}", file=sys.stderr)
         return 2
     result = graph_build.run(req, credentials=creds, tools=tools, session=session, memory=memory, config=config)
-    _print_report(result)
+    _print_report(result, target=req.target)
     if report_dir:
         _emit_reports(result, report_dir=report_dir, report_format=report_format)
     return result.exit_code

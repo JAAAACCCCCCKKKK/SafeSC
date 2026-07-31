@@ -98,10 +98,18 @@ def _build_pattern_map(
 
 
 def _matches_any(filename: str, pattern_map: list[tuple[str, str, EcosystemAdapter]]):
-    """Yield ``(glob, ecosystem_name)`` for every pattern that matches *filename*."""
+    """Yield ``(glob, ecosystem_name)`` for every pattern that matches *filename*.
+
+    Matching is **case-insensitive on every OS**. ``fnmatch.fnmatch`` delegates case
+    handling to ``os.path.normcase``, which folds case on Windows but is case-SENSITIVE on
+    Linux/macOS — so a repo containing ``Requirements.txt`` or ``Pipfile.LOCK`` would be
+    silently missed on a Linux CI runner while passing on a Windows dev box. Lower-casing
+    both sides with ``fnmatchcase`` makes discovery deterministic across platforms.
+    """
+    fname_lc = filename.lower()
     for glob, ecosystem_name, _adapter in pattern_map:
         # fnmatch only compares the bare filename; path separators don't matter.
-        if fnmatch.fnmatch(filename, glob):
+        if fnmatch.fnmatchcase(fname_lc, glob.lower()):
             yield glob, ecosystem_name
 
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Sequence
+
+logger = logging.getLogger("safesc.normalizer")
 
 from tools.index.core.discovery import DiscoveredFile
 from tools.index.core.models import Dependency
@@ -44,6 +47,9 @@ def parse_lockfiles(
         try:
             deps = adapter.parse_lockfile(f.path)
         except Exception:
+            # Don't let one malformed lockfile abort the whole run — but don't hide it
+            # either (a silent swallow here can masquerade as "0 dependencies").
+            logger.warning("failed to parse %s (%s); skipping", f.path, f.ecosystem, exc_info=True)
             deps = []
         all_deps.extend(deps)
 
