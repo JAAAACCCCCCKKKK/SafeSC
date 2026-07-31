@@ -202,13 +202,38 @@ class TestRequirementsParser:
         deps = self._parse(tmp_path, "requests[security]==2.31.0\n")
         assert deps[0].extras == ["security"]
 
-    def test_skips_unpinned_dep(self, tmp_path):
+    def test_detects_unpinned_dep(self, tmp_path):
+        # Real-world requirements are often unpinned/ranged; they must still be detected
+        # (name is what identity/popularity checks need). Version is recorded as "*".
         deps = self._parse(tmp_path, "requests>=2.0\n")
-        assert deps == []
-
-    def test_skips_option_lines(self, tmp_path):
-        deps = self._parse(tmp_path, "-r other.txt\n--index-url https://example.com\nrequests==2.31.0\n")
         assert len(deps) == 1
+        assert deps[0].name == "requests"
+        assert deps[0].version == "*"
+
+    def test_detects_bare_name(self, tmp_path):
+        deps = self._parse(tmp_path, "requests\n")
+        assert len(deps) == 1 and deps[0].version == "*"
+
+    def test_detects_ranged_dep(self, tmp_path):
+        deps = self._parse(tmp_path, "django<5,>=4.2\n")
+        assert len(deps) == 1 and deps[0].name == "django" and deps[0].version == "*"
+
+    def test_skips_option_lines_but_keeps_deps(self, tmp_path):
+        deps = self._parse(tmp_path, "--index-url https://example.com\nrequests==2.31.0\n")
+        assert len(deps) == 1 and deps[0].version == "2.31.0"
+
+    def test_recurses_r_includes(self, tmp_path):
+        (tmp_path / "base.txt").write_text("flask==3.0.0\n", encoding="utf-8")
+        deps = self._parse(tmp_path, "-r base.txt\nrequests==2.31.0\n")
+        names = {d.name for d in deps}
+        assert names == {"flask", "requests"}
+
+    def test_bom_first_dep_not_dropped(self, tmp_path):
+        path = tmp_path / "requirements.txt"
+        path.write_text("\ufeffrequests==2.31.0\nflask==3.0.0\n", encoding="utf-8")
+        from tools.index.ecosystems.python.parsers.requirements import parse
+        deps = parse(path)
+        assert {d.name for d in deps} == {"requests", "flask"}
 
     def test_skips_comments(self, tmp_path):
         deps = self._parse(tmp_path, "# this is a comment\nrequests==2.31.0\n")
