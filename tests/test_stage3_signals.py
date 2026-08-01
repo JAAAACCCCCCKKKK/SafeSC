@@ -366,9 +366,46 @@ class TestOsvSeverityMapping:
     def test_unknown_defaults_to_medium(self):
         assert _severity_for_vuln({"id": "OSV-x"}) == Severity.MEDIUM
 
-    def test_unparseable_cvss_vector_defaults_medium(self):
-        # OSV often ships a vector string, not a number.
+    def test_cvss_v3_vector_is_scored(self):
+        # OSV ships a CVSS *vector*, not a number — it must be computed, not defaulted.
+        crit = {"severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]}
+        assert _severity_for_vuln(crit) == Severity.CRITICAL
+        high = {"severity": [{"score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N"}]}  # 7.4
+        assert _severity_for_vuln(high) == Severity.HIGH
+        med = {"severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"}]}   # 5.3
+        assert _severity_for_vuln(med) == Severity.MEDIUM
+        low = {"severity": [{"score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N"}]}
+        assert _severity_for_vuln(low) == Severity.LOW
+
+    def test_label_less_critical_not_undergraded(self):
+        # Regression: a label-less high-impact advisory (common for PYSEC records) must not
+        # silently drop to MEDIUM — under-grading a critical CVE is the worst failure here.
+        vuln = {"id": "PYSEC-x", "severity": [{"type": "CVSS_V3",
+                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"}]}  # 10.0
+        assert _severity_for_vuln(vuln) == Severity.CRITICAL
+
+    def test_takes_max_of_multiple_vectors(self):
+        vuln = {"severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N"},  # low
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},  # 9.8
+        ]}
+        assert _severity_for_vuln(vuln) == Severity.CRITICAL
+
+    def test_uncomputable_v4_vector_defaults_medium(self):
+        # No label, and a CVSS v4.0 vector we don't compute → fall back to MEDIUM.
+        v4 = {"severity": [{"type": "CVSS_V4",
+              "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N"}]}
+        assert _severity_for_vuln(v4) == Severity.MEDIUM
+
+    def test_incomplete_vector_defaults_medium(self):
+        # A truncated/invalid vector cannot be scored → MEDIUM fallback (not a crash).
         assert _severity_for_vuln({"severity": [{"score": "CVSS:3.1/AV:N/AC:L"}]}) == Severity.MEDIUM
+
+    def test_label_preferred_over_cvss(self):
+        # An explicit curated label wins over the vector (documented behaviour).
+        vuln = {"database_specific": {"severity": "HIGH"},
+                "severity": [{"score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N"}]}
+        assert _severity_for_vuln(vuln) == Severity.HIGH
 
 
 class TestOsvCollector:
@@ -391,6 +428,25 @@ class TestOsvCollector:
 
     async def test_none_response_no_signal(self):
         assert await self._collect(None) == []
+
+    async def test_withdrawn_advisories_are_ignored(self):
+        # A retracted advisory must not flag the dependency.
+        only_withdrawn = {"vulns": [
+            {"id": "OSV-w", "withdrawn": "2024-01-01T00:00:00Z",
+             "database_specific": {"severity": "CRITICAL"}},
+        ]}
+        assert await self._collect(only_withdrawn) == []
+
+    async def test_withdrawn_excluded_from_severity(self):
+        mixed = {"vulns": [
+            {"id": "OSV-live", "database_specific": {"severity": "LOW"}},
+            {"id": "OSV-gone", "withdrawn": "2024-01-01T00:00:00Z",
+             "database_specific": {"severity": "CRITICAL"}},
+        ]}
+        sigs = await self._collect(mixed)
+        assert len(sigs) == 1
+        assert sigs[0].severity == Severity.LOW
+        assert not any("OSV-gone" in e for e in sigs[0].evidence)
 
     async def test_vulns_produce_single_signal_with_max_severity(self):
         response = {
