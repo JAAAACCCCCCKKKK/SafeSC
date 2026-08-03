@@ -164,3 +164,90 @@ def test_build_specialist_deps_dispatches_by_provider(monkeypatch):
     deps = lc.build_specialist_deps(creds)
     assert deps.llm("s", "u").verdict == "suspicious"
     assert cap["model"] == "gpt-4o"
+
+
+# ---- failure diagnostics logging (why an LLM call failed) ----
+
+
+class _FakeRequest:
+    method = "POST"
+    url = "https://api.deepseek.com/v1/chat/completions"
+
+
+class _FakeResponse:
+    status_code = 402
+    request = _FakeRequest()
+    text = '{"error":{"message":"Insufficient Balance"}}'
+
+
+class _FakeAPIStatusError(Exception):
+    """Mimics openai/anthropic APIStatusError (status_code + request + response)."""
+    status_code = 402
+    request = _FakeRequest()
+    response = _FakeResponse()
+
+
+def test_http_diagnostics_extracts_status_url_and_body():
+    status, method, url, body = lc._http_diagnostics(_FakeAPIStatusError("Error code: 402"))
+    assert status == 402
+    assert method == "POST"
+    assert url == "https://api.deepseek.com/v1/chat/completions"
+    assert "Insufficient Balance" in body
+
+
+def test_http_diagnostics_truncates_large_body():
+    class _BigResp(_FakeResponse):
+        text = "x" * 5000
+
+    class _BigErr(_FakeAPIStatusError):
+        response = _BigResp()
+
+    _, _, _, body = lc._http_diagnostics(_BigErr("boom"))
+    assert body.endswith("…[truncated]") and len(body) <= lc._MAX_BODY_LOG + 20
+
+
+def test_http_diagnostics_connection_error_without_response():
+    class _ConnErr(Exception):
+        request = _FakeRequest()  # httpx sets .request but no .response/.status_code
+
+    status, method, url, body = lc._http_diagnostics(_ConnErr("Connection error."))
+    assert status is None
+    assert url == "https://api.deepseek.com/v1/chat/completions"
+    assert body == ""
+
+
+def test_failed_call_logs_url_status_body_and_reraises(monkeypatch, caplog):
+    # Provider SDK whose create() raises an APIStatusError-like exception.
+    def _install_failing_openai():
+        class _Completions:
+            def create(self, **kw):
+                raise _FakeAPIStatusError("Error code: 402 - Insufficient Balance")
+
+        class _Chat:
+            def __init__(self):
+                self.completions = _Completions()
+
+        class OpenAI:
+            def __init__(self, **kw):
+                self.chat = _Chat()
+
+        mod = types.ModuleType("openai")
+        mod.OpenAI = OpenAI
+        monkeypatch.setitem(sys.modules, "openai", mod)
+
+    _install_failing_openai()
+    client = lc.make_llm(_creds(provider="openai", model="deepseek-chat",
+                                base_url="https://api.deepseek.com/v1"))
+
+    with caplog.at_level("INFO", logger="safesc.llm"):
+        with pytest.raises(_FakeAPIStatusError):  # re-raised for the harness to handle
+            client("sys", "usr")
+
+    text = caplog.text
+    assert "LLM request FAILED" in text
+    assert "http_status=402" in text
+    assert "api.deepseek.com/v1/chat/completions" in text
+    assert "Insufficient Balance" in text
+    assert "deepseek-chat" in text
+    # BYOK invariant: the key must never appear in logs (§3.5).
+    assert "secret" not in text

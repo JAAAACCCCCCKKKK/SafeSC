@@ -20,6 +20,8 @@ the concrete tool construction so importing the library surface stays side-effec
 
 from __future__ import annotations
 
+import logging
+import os
 import sys
 
 from entrypoints.cli import main as cli_main
@@ -70,6 +72,20 @@ def _explain_missing_extra(module_name: str) -> None:
     )
 
 
+def _configure_logging() -> None:
+    """Make SafeSC's own diagnostics (e.g. the LLM request/failure logs in
+    ``graph/llm_client.py`` — request URL, HTTP status, response body) visible on the
+    console. Without this the console script has no handler, so only WARNING+ leaks via
+    Python's last-resort handler and the *reason* an LLM call failed stays hidden.
+
+    Third-party libraries are kept at WARNING to avoid noise; the ``safesc`` logger tree is
+    set to ``SAFESC_LOG_LEVEL`` (default INFO, e.g. DEBUG for request/response tracing)."""
+    level_name = os.environ.get("SAFESC_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(level=logging.WARNING)  # root/third-party stay quiet
+    logging.getLogger("safesc").setLevel(level)  # our own logs at the chosen verbosity
+
+
 def _make_console_utf8_safe() -> None:
     """Ensure report summaries (which contain non-ASCII markers such as ``⚠``) never crash
     the process on a non-UTF-8 console (e.g. Windows' cp936/GBK CI runners). Report *files*
@@ -91,6 +107,7 @@ def main(argv=None) -> int:
     actionable message rather than a raw traceback.
     """
     _make_console_utf8_safe()
+    _configure_logging()
     try:
         tools, session, memory = build_local_runtime()
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
