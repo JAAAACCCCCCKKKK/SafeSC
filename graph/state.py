@@ -215,6 +215,18 @@ def append_notes(current: list[DegradedNote], update: list[DegradedNote]) -> lis
     return current + update if update else current
 
 
+def union_keys(current: Optional[list[str]], update: Optional[list[str]]) -> list[str]:
+    """Order-preserving set-union of dep_keys. The gate is the sole writer of
+    `dispatched`, but a reducer keeps fan-in deterministic and idempotent under retries."""
+    if not update:
+        return current or []
+    out = list(current or [])
+    for k in update:
+        if k not in out:
+            out.append(k)
+    return out
+
+
 def write_once(current, update):
     """For gate_decision: only report_agent writes it; last write wins."""
     return update if update is not None else current
@@ -241,6 +253,9 @@ class AuditState(BaseModel):
     escalations: Annotated[dict[str, Severity], max_severity] = Field(default_factory=dict)
     llm_calls: Annotated[int, sum_deltas] = 0
     degraded_notes: Annotated[list[DegradedNote], append_notes] = Field(default_factory=list)
+    # dep_keys the gate fanned out to LLM specialists — lets the scorer distinguish
+    # "no LLM analysis warranted" (deterministic-only flags) from "LLM analysis missing".
+    dispatched: Annotated[list[str], union_keys] = Field(default_factory=list)
 
     # --- gate: report_agent only (§2.4) ---
     gate_decision: Annotated[Optional[GateDecision], write_once] = None

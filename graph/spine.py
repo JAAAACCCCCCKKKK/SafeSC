@@ -382,7 +382,19 @@ def gate_node(state: AuditState, config: Optional[GateConfig] = None) -> dict:
     budget-truncation notes (§5.3). Fan-out itself is handled by gate_edge, not here;
     both call plan_gate and see the same deterministic cap."""
     plan = plan_gate(state, config)
+    dispatched = sorted({t.dep_key for t in plan.fan_out})
+    # Diagnostic: explains *why* (how many) LLM calls happen — 0 dispatched means every
+    # escalation came from a deterministic dimension (vulnerability/popularity) with no LLM
+    # specialist, so no LLM call is made and none should be expected in the logs.
+    logger.info(
+        "gate: %d specialist call(s) dispatched across %d dep(s); %d truncated by LLM budget "
+        "(cap=%d, used=%d)",
+        len(plan.fan_out), len(dispatched), len(plan.degraded_notes),
+        state.llm_call_cap, state.llm_calls,
+    )
     out: dict = {"escalations": plan.escalations}
+    if dispatched:
+        out["dispatched"] = dispatched
     if plan.degraded_notes:
         out["degraded_notes"] = plan.degraded_notes
     return out

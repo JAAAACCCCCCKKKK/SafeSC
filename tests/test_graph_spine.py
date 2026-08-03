@@ -295,11 +295,27 @@ def test_dimension_severity_max_and_source_accumulation():
     assert set(sources) == {"b", "c"}
 
 
-def test_gate_node_writes_escalations_only():
+def test_gate_node_writes_escalations_and_dispatched():
     dep = _dep()
     state = AuditState(dependencies=[dep], signals=[_sig(dep, TrustDimension.IDENTITY, Severity.MEDIUM)])
     out = gate_node(state)
-    assert out == {"escalations": {dep_key(dep): Severity.MEDIUM}}
+    # gray-zone on an LLM dimension → escalated AND recorded as dispatched to a specialist
+    assert out["escalations"] == {dep_key(dep): Severity.MEDIUM}
+    assert out["dispatched"] == [dep_key(dep)]
+    assert "degraded_notes" not in out
+
+
+def test_gate_node_no_dispatch_for_deterministic_only_escalation():
+    # A dep escalated purely on a deterministic dimension (vulnerability) has no LLM
+    # specialist, so the gate dispatches nothing — it must not appear in `dispatched`.
+    dep = _dep()
+    state = AuditState(
+        dependencies=[dep],
+        signals=[_sig(dep, TrustDimension.VULNERABILITY, Severity.HIGH, source="vulnerability.osv")],
+    )
+    out = gate_node(state)
+    assert out["escalations"] == {dep_key(dep): Severity.HIGH}
+    assert "dispatched" not in out  # nothing routed to an LLM specialist
 
 
 # --------------------------------------------------------------------------- #

@@ -125,15 +125,33 @@ def test_degraded_notes_mark_incomplete():
     assert "degraded node" in gd.summary
 
 
-def test_gray_zone_without_llm_signal_marks_incomplete():
+def test_dispatched_without_llm_signal_marks_incomplete():
+    # A dep the gate ROUTED to an LLM specialist (`dispatched`) that produced no LLM
+    # signal (specialist degraded) is genuinely incomplete.
     dep = _dep()
     state = AuditState(
         dependencies=[dep],
         signals=[_sig(dep, TrustDimension.IDENTITY, Severity.MEDIUM)],
-        escalations={dep_key(dep): Severity.MEDIUM},   # escalated but no llm signal present
+        escalations={dep_key(dep): Severity.MEDIUM},
+        dispatched=[dep_key(dep)],
     )
     gd = score(state)
     assert "without LLM analysis" in gd.summary
+
+
+def test_deterministic_only_escalation_is_not_incomplete():
+    # Regression: a dep flagged HIGH by a deterministic dimension (vulnerability) with NO
+    # LLM specialist was never dispatched, so it must NOT trigger a false INCOMPLETE.
+    dep = _dep()
+    state = AuditState(
+        dependencies=[dep],
+        signals=[_sig(dep, TrustDimension.VULNERABILITY, Severity.HIGH, source="vulnerability.osv")],
+        escalations={dep_key(dep): Severity.HIGH},
+        dispatched=[],  # gate routed nothing to an LLM specialist
+    )
+    gd = score(state)
+    assert "INCOMPLETE ANALYSIS" not in gd.summary
+    assert "without LLM analysis" not in gd.summary
 
 
 def test_gray_zone_with_llm_signal_is_complete():
@@ -145,6 +163,7 @@ def test_gray_zone_with_llm_signal_is_complete():
             _sig(dep, TrustDimension.IDENTITY, Severity.MEDIUM, origin=SignalOrigin.LLM, source="llm.identity"),
         ],
         escalations={dep_key(dep): Severity.MEDIUM},
+        dispatched=[dep_key(dep)],
     )
     gd = score(state)
     assert "INCOMPLETE ANALYSIS" not in gd.summary

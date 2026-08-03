@@ -79,11 +79,13 @@ def score(state: AuditState, config: ScoreConfig | None = None) -> GateDecision:
 
     overall = max(per_dep.values(), default=Severity.CLEAN)
 
-    # A gray-zone dep that never received an LLM signal (cap-truncated or degraded)
-    # means the picture is incomplete for that dep.
-    escalated = {k for k, v in state.escalations.items() if v >= Severity.MEDIUM}
+    # "Incomplete" means a dep that was ROUTED to an LLM specialist by the gate but never
+    # produced an LLM signal (its specialist was cap-truncated or degraded). It must NOT
+    # include deps escalated purely by deterministic dimensions (vulnerability/popularity),
+    # which have no LLM specialist (§2.3) and are fully analysed by their static signals —
+    # counting those produced a false "INCOMPLETE" on deterministic-only findings.
     have_llm = {s.dep_key for s in state.signals if s.origin.value == "llm"}
-    unanalysed = escalated - have_llm
+    unanalysed = set(state.dispatched) - have_llm
     incomplete = bool(state.degraded_notes) or bool(unanalysed) or state.llm_calls > state.llm_call_cap
 
     is_audit = state.mode == RunMode.AUDIT
