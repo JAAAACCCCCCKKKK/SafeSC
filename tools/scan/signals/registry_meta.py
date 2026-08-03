@@ -84,6 +84,33 @@ def _looks_like_repo(url: str) -> bool:
     return any(host in lowered for host in ("github.com", "gitlab.com", "bitbucket.org"))
 
 
+def _pypi_contains(published: frozenset[str], pinned: str) -> bool:
+    """Is *pinned* among *published*, comparing under PEP 440 (not raw strings)?
+
+    PyPI stores canonical version keys, but a lockfile may pin an *equal* non-canonical
+    form (``2.31`` == ``2.31.0``, ``01.2.3`` == ``1.2.3``, trailing-zero/epoch/case
+    differences). A raw ``in`` check then reports the version "not published" and the
+    provenance collector escalates to HIGH — a false positive that fails the CI gate.
+    Fall back to the raw check if `packaging` is unavailable (no regression)."""
+    if pinned in published:
+        return True
+    try:
+        from packaging.version import InvalidVersion, Version  # ubiquitous; lazy import
+    except Exception:  # pragma: no cover - packaging effectively always present
+        return False
+    try:
+        target = Version(pinned)
+    except InvalidVersion:
+        return False  # unparseable pin can't be normalised — treat as absent (raw already failed)
+    for candidate in published:
+        try:
+            if Version(candidate) == target:
+                return True
+        except InvalidVersion:
+            continue
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # PyPI
 # --------------------------------------------------------------------------- #
@@ -136,11 +163,13 @@ async def _pypi_package_metadata(
         if isinstance(files, list) and files and all(f.get("yanked") for f in files):
             yanked.add(ver)
 
+    # PEP 440-aware membership so an equal-but-non-canonical pin (e.g. 2.31 vs 2.31.0)
+    # isn't misreported as absent/not-yanked.
     return PackageMetadata(
         published_versions=published,
         yanked_versions=frozenset(yanked),
-        version_present=dep.version in published if published else True,
-        version_yanked=dep.version in yanked,
+        version_present=_pypi_contains(published, dep.version) if published else True,
+        version_yanked=_pypi_contains(frozenset(yanked), dep.version),
     )
 
 

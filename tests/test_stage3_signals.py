@@ -880,6 +880,35 @@ class TestPackageMetadata:
         assert meta.version_present is True
         assert meta.version_yanked is True
 
+    async def test_pypi_version_present_is_pep440_normalised(self):
+        # Regression: a lockfile may pin an equal-but-non-canonical version. Exact-string
+        # matching wrongly reported it absent → false HIGH "version_not_published".
+        from tools.scan.signals.registry_meta import _pypi_package_metadata
+
+        data = {"releases": {"2.31.0": [{"yanked": False}], "1.2.3": [{"yanked": True}]}}
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        for pin in ("2.31.0", "2.31", "2.31.0.0"):  # all PEP 440-equal to 2.31.0
+            meta = await _pypi_package_metadata(_dep(version=pin), session)
+            assert meta.version_present is True, pin
+        # non-canonical yanked pin is still recognised as yanked
+        meta = await _pypi_package_metadata(_dep(version="01.2.3"), session)
+        assert meta.version_yanked is True
+        # a genuinely absent version is still reported absent (true positive preserved)
+        meta = await _pypi_package_metadata(_dep(version="9.9.9"), session)
+        assert meta.version_present is False
+
+    def test_pypi_contains_helper(self):
+        from tools.scan.signals.registry_meta import _pypi_contains
+
+        pub = frozenset({"2.31.0", "1.0"})
+        assert _pypi_contains(pub, "2.31.0") is True
+        assert _pypi_contains(pub, "2.31") is True        # normalised match
+        assert _pypi_contains(pub, "1.0.0") is True        # trailing-zero match
+        assert _pypi_contains(pub, "3.0") is False         # genuinely absent
+        assert _pypi_contains(pub, "not-a-version") is False  # unparseable → absent
+
     async def test_npm_install_script_detection(self):
         from tools.scan.signals.registry_meta import _npm_package_metadata
 
