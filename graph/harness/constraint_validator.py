@@ -52,8 +52,21 @@ def validate_schema(raw) -> LLMOutput:
     return out
 
 
+# Registry-provenance fields are FACTS, not files. The IdentityAgent is explicitly
+# asked to cite them (publisher, canonical repo, release dates), so their *values* are
+# valid, citable evidence and must be admitted alongside file paths — otherwise a
+# correct registry citation is wrongly rejected as a "file not in package".
+_REGISTRY_FACT_FIELDS = (
+    "author", "repo_url", "homepage", "summary",
+    "first_release_at", "latest_release_at",
+)
+
+
 def evidence_paths(bundle) -> set[str]:
-    """All file paths present in a DeepAnalysisEvidence bundle (duck-typed)."""
+    """All *citable tokens* present in a DeepAnalysisEvidence bundle (duck-typed):
+    file paths from every list slice, plus registry-provenance fact values from the
+    identity slice (publisher, repo, dates, …). Named `evidence_paths` for back-compat;
+    it is really the set of things a specialist is allowed to cite."""
     paths: set[str] = set()
     for slice_name in ("behavior", "provenance", "identity"):
         sl = getattr(bundle, slice_name, None)
@@ -66,7 +79,34 @@ def evidence_paths(bundle) -> set[str]:
                     p = getattr(it, "path", None)
                     if p:
                         paths.add(p)
+    paths |= _registry_fact_tokens(bundle)
     return paths
+
+
+def _registry_fact_tokens(bundle) -> set[str]:
+    """Citable tokens from the identity slice's registry-provenance facts.
+
+    Each fact value (and its whitespace-separated sub-tokens) is admitted so the LLM can
+    cite e.g. `source repo: https://github.com/redis/redis-vl-python` or the bare repo
+    URL, or a release timestamp, and have it resolve against the gathered evidence."""
+    identity = getattr(bundle, "identity", None)
+    registry = getattr(identity, "registry", None) if identity is not None else None
+    if registry is None or not getattr(registry, "resolved", False):
+        return set()
+    tokens: set[str] = set()
+    for field in _REGISTRY_FACT_FIELDS:
+        value = getattr(registry, field, None)
+        if not value:
+            continue
+        text = str(value)
+        tokens.add(text)
+        # also admit each path-like sub-token (URL fragments, emails, dates) so a
+        # citation that quotes only part of a fact still resolves.
+        tokens.update(_PATH_TOKEN.findall(text))
+    nearest = getattr(identity, "nearest_popular", None)
+    if nearest:
+        tokens.add(str(nearest))
+    return tokens
 
 
 def unresolved_refs(out: LLMOutput, known_paths: set[str]) -> list[str]:

@@ -61,6 +61,58 @@ def test_unresolved_refs_allows_paraphrase_and_known_path():
     assert cv.unresolved_refs(out, {"scripts/setup.js"}) == []
 
 
+def _identity_bundle_with_registry(**registry_fields):
+    reg = types.SimpleNamespace(resolved=True, homepage=None, summary=None, **registry_fields)
+    for f in ("author", "repo_url", "homepage", "summary", "first_release_at", "latest_release_at"):
+        if not hasattr(reg, f):
+            setattr(reg, f, None)
+    identity = types.SimpleNamespace(docs=[], nearest_popular=registry_fields.get("nearest"), registry=reg)
+    return types.SimpleNamespace(behavior=None, provenance=None, identity=identity)
+
+
+def test_evidence_paths_includes_registry_facts():
+    bundle = _identity_bundle_with_registry(
+        author='"Redis Inc." <applied.ai@redis.com>',
+        repo_url="https://github.com/redis/redis-vl-python",
+        first_release_at="2023-08-07T02:55:03.922746Z",
+    )
+    tokens = cv.evidence_paths(bundle)
+    assert "https://github.com/redis/redis-vl-python" in tokens
+    assert "2023-08-07T02:55:03.922746Z" in tokens
+
+
+def test_registry_fact_citations_are_accepted():
+    # Regression: the IdentityAgent is asked to cite registry facts (publisher, repo,
+    # dates). Those are facts, not files — they must resolve, not be rejected as
+    # "file not in package" (which previously degraded every typosquat verification).
+    bundle = _identity_bundle_with_registry(
+        author='"Redis Inc." <applied.ai@redis.com>',
+        repo_url="https://github.com/redis/redis-vl-python",
+        first_release_at="2023-08-07T02:55:03.922746Z",
+        latest_release_at="2026-07-31T20:16:25.724329Z",
+    )
+    known = cv.evidence_paths(bundle)
+    out = _out(
+        verdict="clean",
+        confidence=0.9,
+        evidence=[
+            'source repo: https://github.com/redis/redis-vl-python',
+            'first release: 2023-08-07T02:55:03.922746Z',
+            'latest release: 2026-07-31T20:16:25.724329Z',
+        ],
+    )
+    assert cv.unresolved_refs(out, known) == []
+
+
+def test_registry_facts_ignored_when_unresolved():
+    reg = types.SimpleNamespace(resolved=False)
+    identity = types.SimpleNamespace(docs=[], nearest_popular=None, registry=reg)
+    bundle = types.SimpleNamespace(behavior=None, provenance=None, identity=identity)
+    # No registry facts admitted → a file citation still fails as before.
+    out = _out(evidence=["see phantom.py"])
+    assert cv.unresolved_refs(out, cv.evidence_paths(bundle)) == ["see phantom.py"]
+
+
 def test_check_escalate_only():
     assert cv.check_escalate_only(Severity.HIGH, Severity.LOW) is True
     assert cv.check_escalate_only(Severity.CLEAN, Severity.CLEAN) is True
