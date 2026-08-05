@@ -79,12 +79,15 @@ class TestUvParser:
     def test_wheel_hash_and_url(self, deps):
         req = next(d for d in deps if d.name == "requests")
         assert req.hash == "sha256:abc123"
-        assert "requests-2.31.0" in req.source_url
+        # The wheel URL is an artifact download, not a source repo.
+        assert "requests-2.31.0" in req.artifact_url
+        assert req.source_url is None
 
     def test_sdist_fallback_when_no_wheels(self, deps):
         cert = next(d for d in deps if d.name == "certifi")
         assert cert.hash == "sha256:def456"
-        assert "certifi-2024.2.2.tar.gz" in cert.source_url
+        assert "certifi-2024.2.2.tar.gz" in cert.artifact_url
+        assert cert.source_url is None
 
     def test_root_package_excluded(self, deps):
         assert not any(d.name == "myapp" for d in deps)
@@ -310,7 +313,9 @@ class TestPackageLockParser:
         assert exp.is_direct is True
         assert exp.layer_number == 1
         assert exp.hash == "sha512-abc"
-        assert exp.source_url == "https://r.npm/express.tgz"
+        # An npm tarball is an artifact download, not a source repo.
+        assert exp.artifact_url == "https://r.npm/express.tgz"
+        assert exp.source_url is None
 
     def test_v3_transitive_dep_layer_and_parent(self, tmp_path):
         from tools.index.ecosystems.javascript.parsers.package_lock import parse
@@ -385,7 +390,9 @@ class TestYarnParser:
         write(tmp_path / "yarn.lock", _YARN_LOCK)
         deps = parse(tmp_path / "yarn.lock")
         exp = next(d for d in deps if d.name == "express")
-        assert exp.source_url == "https://registry.yarnpkg.com/express/-/express-4.18.2.tgz"
+        # The resolved tarball is an artifact download, not a source repo.
+        assert exp.artifact_url == "https://registry.yarnpkg.com/express/-/express-4.18.2.tgz"
+        assert exp.source_url is None
 
     def test_direct_via_package_json(self, tmp_path):
         from tools.index.ecosystems.javascript.parsers.yarn import parse
@@ -531,9 +538,11 @@ class TestCargoParser:
         serde = next(d for d in deps if d.name == "serde")
         assert serde.hash == "sha256:deadbeef1234"
 
-    def test_crates_io_source_url(self, deps):
+    def test_crates_io_artifact_url(self, deps):
         serde = next(d for d in deps if d.name == "serde")
-        assert serde.source_url == "https://static.crates.io/crates/serde/serde-1.0.193.crate"
+        # The .crate download is an artifact URL, not a source repo.
+        assert serde.artifact_url == "https://static.crates.io/crates/serde/serde-1.0.193.crate"
+        assert serde.source_url is None
 
     def test_ecosystem_tag(self, deps):
         assert all(d.ecosystem == "rust" for d in deps)
@@ -588,9 +597,11 @@ class TestGoModParser:
         net = next(d for d in deps if "x/net" in d.name)
         assert net.hash is None  # not in our go.sum fixture
 
-    def test_source_url_uses_proxy(self, deps):
+    def test_artifact_url_uses_proxy_and_source_url_is_repo(self, deps):
         errors = next(d for d in deps if "errors" in d.name)
-        assert errors.source_url == "https://proxy.golang.org/github.com/pkg/errors/@v/v0.9.1.zip"
+        # The proxy .zip is the artifact download; the module path maps to a clonable repo.
+        assert errors.artifact_url == "https://proxy.golang.org/github.com/pkg/errors/@v/v0.9.1.zip"
+        assert errors.source_url == "https://github.com/pkg/errors"
 
     def test_gosum_defers_when_gomod_present(self, tmp_path):
         from tools.index.ecosystems import parse
@@ -659,10 +670,12 @@ class TestMavenParser:
         web = next(d for d in deps if "starter-web" in d.name)
         assert web.extras == []
 
-    def test_maven_central_source_url(self, deps):
+    def test_maven_central_artifact_url(self, deps):
         web = next(d for d in deps if "starter-web" in d.name)
-        assert "repo1.maven.org" in web.source_url
-        assert "spring-boot-starter-web-3.2.0.jar" in web.source_url
+        # The Maven Central .jar is an artifact download, not a source repo.
+        assert "repo1.maven.org" in web.artifact_url
+        assert "spring-boot-starter-web-3.2.0.jar" in web.artifact_url
+        assert web.source_url is None
 
     def test_all_direct(self, deps):
         assert all(d.is_direct is True for d in deps)
@@ -694,10 +707,11 @@ class TestGradleParser:
         assert guava.name == "com.google.guava:guava"
         assert guava.version == "32.1.3-jre"
 
-    def test_maven_central_source_url(self, deps):
+    def test_maven_central_artifact_url(self, deps):
         guava = next(d for d in deps if "guava" in d.name)
-        assert "repo1.maven.org" in guava.source_url
-        assert "guava-32.1.3-jre.jar" in guava.source_url
+        assert "repo1.maven.org" in guava.artifact_url
+        assert "guava-32.1.3-jre.jar" in guava.artifact_url
+        assert guava.source_url is None
 
     def test_comments_and_empty_skipped(self, deps):
         assert len(deps) == 2
@@ -734,7 +748,30 @@ class TestNormalizer:
         deps = parse_lockfiles(files)
         cert = next(d for d in deps if d.name == "certifi")
         req = next(d for d in deps if d.name == "requests")
+        # parent_url mirrors the parent's *source* URL. Registry deps have no VCS
+        # source_url (their download URL lives in artifact_url), so it is None here.
         assert cert.parent_url == req.source_url
+        assert req.source_url is None and cert.parent_url is None
+
+    def test_second_pass_fills_parent_url_from_git_source(self, tmp_path):
+        # When the parent is git-sourced (real source_url), it propagates to children.
+        lock = (
+            'version = 1\n'
+            '[[package]]\nname = "app"\nversion = "0.1.0"\nsource = { virtual = "." }\n'
+            'dependencies = [{ name = "parentpkg" }]\n'
+            '[[package]]\nname = "parentpkg"\nversion = "1.0.0"\n'
+            'source = { git = "https://github.com/acme/parentpkg?rev=abc#abc" }\n'
+            'dependencies = [{ name = "childpkg" }]\n'
+            '[[package]]\nname = "childpkg"\nversion = "2.0.0"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'
+            'wheels = [{ url = "https://files.pythonhosted.org/childpkg-2.0.0-py3-none-any.whl", hash = "sha256:z" }]\n'
+        )
+        write(tmp_path / "uv.lock", lock)
+        deps = parse_lockfiles(discover(tmp_path))
+        parent = next(d for d in deps if d.name == "parentpkg")
+        child = next(d for d in deps if d.name == "childpkg")
+        assert parent.source_url == "https://github.com/acme/parentpkg"
+        assert child.parent_url == "https://github.com/acme/parentpkg"
 
     def test_parser_exception_swallowed(self, tmp_path):
         # Corrupt file should not crash the pipeline — just yield no deps.

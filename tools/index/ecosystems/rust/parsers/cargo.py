@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.index.core.models import Dependency
 from tools.index.core.text_io import read_text
+from tools.index.core.url_classify import normalise_vcs_url
 
 _CRATES_URL = "https://static.crates.io/crates/{name}/{name}-{version}.crate"
 
@@ -70,9 +71,14 @@ def parse(path: Path) -> list[Dependency]:
         checksum = pkg.get("checksum")
         key = (name, version)
 
-        source_url = None
-        if "registry" in pkg.get("source", ""):
-            source_url = _CRATES_URL.format(name=name, version=version)
+        # The crates.io URL is the artifact (.crate) download, not a clonable repo.
+        # A git-sourced crate carries a real repo URL in its `source` field instead.
+        source_val = pkg.get("source", "")
+        artifact_url = source_url = None
+        if "registry" in source_val:
+            artifact_url = _CRATES_URL.format(name=name, version=version)
+        elif isinstance(source_val, str) and source_val.startswith(("git+", "git:")):
+            source_url = normalise_vcs_url(source_val)
 
         result.append(Dependency(
             name=name,
@@ -81,6 +87,7 @@ def parse(path: Path) -> list[Dependency]:
             lockfile_path=path,
             hash=f"sha256:{checksum}" if checksum else None,
             source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=key in direct_keys,
             layer_number=layer_map.get(key),
             parent_name=parent_map.get(key),

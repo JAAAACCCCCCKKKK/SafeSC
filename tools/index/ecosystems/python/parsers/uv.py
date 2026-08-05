@@ -67,15 +67,29 @@ def parse(path: Path) -> list[Dependency]:
         name = pkg["name"].lower()
         version = pkg.get("version", "")
 
-        hash_val = url = None
+        # The URL in a uv.lock package is the download URL of the published
+        # ARTIFACT (wheel or sdist), not a VCS/source-repository URL. It must go to
+        # `artifact_url`, not `source_url`: `source_url` is consumed by the Stage-4
+        # deep-analysis clone (`git clone`), and handing it a .whl URL makes every
+        # clone fail. The real source repo is resolved from registry metadata later.
+        hash_val = artifact_url = None
         wheels = pkg.get("wheels", [])
         sdist = pkg.get("sdist")
         if wheels and isinstance(wheels, list) and isinstance(wheels[0], dict):
             hash_val = wheels[0].get("hash")
-            url = wheels[0].get("url")
+            artifact_url = wheels[0].get("url")
         elif isinstance(sdist, dict):
             hash_val = sdist.get("hash")
-            url = sdist.get("url")
+            artifact_url = sdist.get("url")
+
+        # A VCS-sourced package (`source = { git = ... }`) does carry a real repo URL;
+        # use it as source_url so those (and only those) can be cloned.
+        source = pkg.get("source")
+        source_url = None
+        if isinstance(source, dict):
+            git_ref = source.get("git")
+            if isinstance(git_ref, str) and git_ref:
+                source_url = git_ref.split("?", 1)[0].split("#", 1)[0]
 
         result.append(Dependency(
             name=name,
@@ -83,7 +97,8 @@ def parse(path: Path) -> list[Dependency]:
             ecosystem="python",
             lockfile_path=path,
             hash=hash_val,
-            source_url=url,
+            source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=name in direct_names,
             layer_number=layer_map.get(name),
             parent_name=parent_map.get(name),

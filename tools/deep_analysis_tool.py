@@ -574,17 +574,8 @@ def _default_registry_lookup(name: str, version: str, ecosystem: str) -> Optiona
         return None
 
 
-def gather_registry_provenance(
-    req: "DeepAnalysisRequest",
-    registry_lookup=None,
-) -> RegistryProvenance:
-    """Populate a RegistryProvenance from the registry, degrading to unresolved."""
-    lookup = registry_lookup or _default_registry_lookup
-    try:
-        facts = lookup(req.name, req.version, req.ecosystem)
-    except Exception as exc:
-        logger.warning("registry provenance lookup raised for %s: %s", req.name, exc)
-        facts = None
+def _registry_provenance_from_facts(facts: Optional[dict]) -> RegistryProvenance:
+    """Build a RegistryProvenance from a facts dict (or unresolved if None/empty)."""
     if not facts:
         return RegistryProvenance(resolved=False)
     return RegistryProvenance(
@@ -597,6 +588,20 @@ def gather_registry_provenance(
         latest_release_at=facts.get("latest_release_at"),
         resolved=True,
     )
+
+
+def gather_registry_provenance(
+    req: "DeepAnalysisRequest",
+    registry_lookup=None,
+) -> RegistryProvenance:
+    """Populate a RegistryProvenance from the registry, degrading to unresolved."""
+    lookup = registry_lookup or _default_registry_lookup
+    try:
+        facts = lookup(req.name, req.version, req.ecosystem)
+    except Exception as exc:
+        logger.warning("registry provenance lookup raised for %s: %s", req.name, exc)
+        facts = None
+    return _registry_provenance_from_facts(facts)
 
 
 # =============================================================================
@@ -750,10 +755,30 @@ def gather_deep_analysis_evidence(
     dims = set(dimensions)
     evidence = DeepAnalysisEvidence(request=req)
 
+    # Registry packages carry an artifact_url (a .whl/.tgz/.jar), not a clonable
+    # source_url. Resolve the real source repo from registry metadata so a shallow clone
+    # can still gather README/source evidence; without this, every registry dep fails to
+    # clone. Facts are fetched once here and reused for identity provenance below.
+    needs_clone = bool(dims & {"behavior", "identity", "provenance"})
+    registry_facts: Optional[dict] = None
+    if (not req.source_url and needs_clone) or "identity" in dims:
+        try:
+            registry_facts = (registry_lookup or _default_registry_lookup)(
+                req.name, req.version, req.ecosystem
+            )
+        except Exception:
+            registry_facts = None
+
+    clone_req = req
+    if not req.source_url and needs_clone:
+        repo_url = (registry_facts or {}).get("repo_url")
+        if repo_url:
+            clone_req = req.model_copy(update={"source_url": repo_url})
+
     # A single shallow clone serves behavior + identity + provenance file comparison.
     repo: Optional[ClonedRepo] = None
     if dims & {"behavior", "identity", "provenance"}:
-        repo = safe_clone(req, depth=1)
+        repo = safe_clone(clone_req, depth=1)
         if repo is None:
             evidence.note_degraded("source clone unavailable (missing/unsafe source_url or git failure)")
 
@@ -773,10 +798,11 @@ def gather_deep_analysis_evidence(
             except Exception as exc:
                 logger.exception("identity doc extraction failed")
                 evidence.note_degraded(f"identity doc extraction error: {exc}")
-        # Registry provenance does not need a clone — fetch it even when the source
-        # repo is unavailable (a squat often has no real repo, which is itself telling).
+        # Registry provenance does not need a clone — present even when the source repo
+        # is unavailable (a squat often has no real repo, which is itself telling). Reuse
+        # the facts already fetched above so we don't hit the registry twice.
         try:
-            evidence.identity.registry = gather_registry_provenance(req, registry_lookup)
+            evidence.identity.registry = _registry_provenance_from_facts(registry_facts)
             if not evidence.identity.registry.resolved:
                 evidence.note_degraded("identity registry provenance unavailable")
         except Exception as exc:

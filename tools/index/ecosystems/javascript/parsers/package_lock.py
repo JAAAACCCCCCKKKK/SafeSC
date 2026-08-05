@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.index.core.models import Dependency
 from tools.index.core.text_io import read_text
+from tools.index.core.url_classify import split_source_artifact
 
 
 def _package_json_direct(directory: Path) -> set[str]:
@@ -65,13 +66,17 @@ def _parse_v2_v3(packages: dict, path: Path) -> list[Dependency]:
         if not key or key.count("node_modules/") > 1:
             continue
         name = _strip_nm(key)
+        # `resolved` is usually a tarball download URL, but for git deps it is a git URL;
+        # route each to the correct field so `git clone` is never handed a .tgz.
+        source_url, artifact_url = split_source_artifact(data.get("resolved"))
         result.append(Dependency(
             name=name,
             version=data.get("version", ""),
             ecosystem="javascript",
             lockfile_path=path,
             hash=data.get("integrity"),
-            source_url=data.get("resolved"),
+            source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=name in direct_names,
             layer_number=layer_map.get(name),
             parent_name=parent_map.get(name),
@@ -85,13 +90,15 @@ def _parse_v1(deps: dict, path: Path, direct_names: set[str],
     for name, data in deps.items():
         if not isinstance(data, dict):
             continue
+        source_url, artifact_url = split_source_artifact(data.get("resolved"))
         result.append(Dependency(
             name=name,
             version=data.get("version", ""),
             ecosystem="javascript",
             lockfile_path=path,
             hash=data.get("integrity"),
-            source_url=data.get("resolved"),
+            source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=name in direct_names,
             layer_number=layer,
             parent_name=parent,

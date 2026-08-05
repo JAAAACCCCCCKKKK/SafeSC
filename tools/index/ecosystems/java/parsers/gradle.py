@@ -45,7 +45,8 @@ def parse(path: Path) -> list[Dependency]:
             ecosystem="java",
             lockfile_path=path,
             hash=None,
-            source_url=_MVN_CENTRAL.format(
+            # Maven Central .jar is an artifact download, not a source repo.
+            artifact_url=_MVN_CENTRAL.format(
                 group_path=group_path, artifact=artifact_id, version=version
             ),
             is_direct=False,

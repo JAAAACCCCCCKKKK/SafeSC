@@ -191,11 +191,17 @@ def test_memory_lookup_failure_is_tolerated():
 # default gatherer (real Stage-4 tool, offline: no source_url → degraded evidence)
 # --------------------------------------------------------------------------- #
 
-def test_default_gatherer_runs_offline_and_still_produces_a_signal():
+def test_default_gatherer_runs_offline_and_still_produces_a_signal(monkeypatch):
     # No gather_evidence injected → base._default_gather calls the real tool. With no
     # source_url the clone degrades, but the specialist still reasons over the (empty)
     # evidence and emits a signal. Ecosystem must be one the deep tool accepts (the
     # index adapters emit exactly python/javascript/rust/go/java).
+    # Stub the registry lookup and clone so the test stays truly offline (the gatherer
+    # would otherwise resolve a repo via a real PyPI call for the fake package).
+    from tools import deep_analysis_tool as m
+
+    monkeypatch.setattr(m, "_default_registry_lookup", lambda *a, **k: None)
+    monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
     task = _task(dep=_dep(ecosystem="python"))
     out = behavior_agent.run(task, SpecialistDeps(llm=_llm_returning("clean", 0.2)))
     assert out["llm_calls"] == 1

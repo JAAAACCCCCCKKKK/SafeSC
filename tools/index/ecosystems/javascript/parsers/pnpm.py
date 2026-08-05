@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tools.index.core.models import Dependency
 from tools.index.core.text_io import read_text
+from tools.index.core.url_classify import split_source_artifact
 
 
 def parse(path: Path) -> list[Dependency]:
@@ -62,13 +63,15 @@ def parse(path: Path) -> list[Dependency]:
         integrity = resolution.get("integrity") if isinstance(resolution, dict) else None
         tarball = resolution.get("tarball") if isinstance(resolution, dict) else None
 
+        source_url, artifact_url = split_source_artifact(tarball)
         result.append(Dependency(
             name=name,
             version=version,
             ecosystem="javascript",
             lockfile_path=path,
             hash=integrity,
-            source_url=tarball,
+            source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=name in direct_names,
             layer_number=1 if name in direct_names else None,
             parent_name=None,

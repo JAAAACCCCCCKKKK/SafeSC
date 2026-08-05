@@ -7,6 +7,7 @@ from pathlib import Path
 
 from tools.index.core.models import Dependency
 from tools.index.core.text_io import read_text
+from tools.index.core.url_classify import module_path_to_repo_url
 
 _DEP_LINE_RE = re.compile(r"^\s+(\S+)\s+(\S+)(.*)")
 
@@ -71,7 +72,10 @@ def _parse_gomod(path: Path) -> list[Dependency]:
             ecosystem="go",
             lockfile_path=path,
             hash=gosum.get((module, version)),
-            source_url=f"https://proxy.golang.org/{module}/@v/{version}.zip",
+            # A Go module path (github.com/pkg/errors) is VCS-addressed, so it maps to a
+            # clonable source repo; the proxy .zip is the artifact download.
+            source_url=module_path_to_repo_url(module),
+            artifact_url=f"https://proxy.golang.org/{module}/@v/{version}.zip",
             is_direct=is_direct,
             layer_number=1 if is_direct else 2,
             parent_name=None,
@@ -98,7 +102,8 @@ def _parse_gosum_standalone(path: Path) -> list[Dependency]:
                     ecosystem="go",
                     lockfile_path=path,
                     hash=hash_val,
-                    source_url=f"https://proxy.golang.org/{module}/@v/{version_tag}.zip",
+                    source_url=module_path_to_repo_url(module),
+                    artifact_url=f"https://proxy.golang.org/{module}/@v/{version_tag}.zip",
                     is_direct=False,
                     layer_number=2,
                     parent_name=None,

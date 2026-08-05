@@ -334,6 +334,43 @@ def test_gather_identity_includes_nearest_popular_and_registry(monkeypatch):
     assert ev.identity.registry.total_releases == 42
 
 
+def test_clone_uses_registry_repo_url_when_source_url_absent(monkeypatch):
+    # A registry dep has an artifact_url (.whl) but no source_url. The gatherer must
+    # resolve the real repo from registry metadata and clone THAT, not fail.
+    from tools import deep_analysis_tool as m
+
+    cloned_with = {}
+
+    def fake_clone(req, depth=1):
+        cloned_with["source_url"] = req.source_url
+        return None  # clone still "fails" — we only assert what URL it was given
+
+    monkeypatch.setattr(m, "safe_clone", fake_clone)
+    monkeypatch.setattr(m, "extract_recent_commits", lambda req, depth=20: [])
+    facts = {"repo_url": "https://github.com/redis/redis-vl-python", "author": "Redis Inc."}
+    req = DeepAnalysisRequest(name="redisvl", version="0.25.0", ecosystem="python")  # no source_url
+    m.gather_deep_analysis_evidence(
+        req, dimensions=("identity",), registry_lookup=lambda *a, **k: facts,
+    )
+    assert cloned_with["source_url"] == "https://github.com/redis/redis-vl-python"
+
+
+def test_clone_keeps_existing_source_url(monkeypatch):
+    # If the dep already has a VCS source_url, it is used as-is (no registry override).
+    from tools import deep_analysis_tool as m
+
+    cloned_with = {}
+    monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: cloned_with.setdefault("u", req.source_url) or None)
+    monkeypatch.setattr(m, "extract_recent_commits", lambda req, depth=20: [])
+    req = DeepAnalysisRequest(
+        name="pkg", version="1", ecosystem="python", source_url="https://github.com/o/r"
+    )
+    m.gather_deep_analysis_evidence(
+        req, dimensions=("identity",), registry_lookup=lambda *a, **k: {"repo_url": "https://github.com/evil/other"},
+    )
+    assert cloned_with["u"] == "https://github.com/o/r"
+
+
 def test_gather_identity_registry_fetched_without_clone():
     # A squat often has no real repo; registry provenance must still be attempted
     # even when the source clone is unavailable.

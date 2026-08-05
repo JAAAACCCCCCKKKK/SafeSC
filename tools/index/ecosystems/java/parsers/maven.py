@@ -51,10 +51,11 @@ def parse(path: Path) -> list[Dependency]:
         if not group_id or not artifact_id:
             continue
 
-        source_url = None
+        # Maven Central resolves to a .jar artifact download, not a source repo.
+        artifact_url = None
         if version and scope not in ("system", "provided"):
             group_path = group_id.replace(".", "/")
-            source_url = _MVN_CENTRAL.format(
+            artifact_url = _MVN_CENTRAL.format(
                 group_path=group_path,
                 artifact=artifact_id,
                 version=version,
@@ -66,7 +67,7 @@ def parse(path: Path) -> list[Dependency]:
             ecosystem="java",
             lockfile_path=path,
             hash=None,
-            source_url=source_url,
+            artifact_url=artifact_url,
             is_direct=True,
             layer_number=1,
             parent_name=None,
