@@ -50,14 +50,30 @@ class SpecialistDeps:
 # =============================================================================
 
 
-def _default_gather(dependency, dimensions, artifact_download=None):
+def _default_gather(dependency, dimensions, artifact_download=None, *, nearest_popular=None):
     from tools.deep_analysis_tool import (  # local import keeps base.py import-light
         DeepAnalysisRequest,
         gather_deep_analysis_evidence,
     )
 
     req = DeepAnalysisRequest.from_dependency(dependency)
-    return gather_deep_analysis_evidence(req, dimensions=dimensions, artifact_download=artifact_download)
+    return gather_deep_analysis_evidence(
+        req,
+        dimensions=dimensions,
+        artifact_download=artifact_download,
+        nearest_popular=nearest_popular,
+    )
+
+
+def _nearest_popular_from(task: SpecialistTask) -> Optional[str]:
+    """Extract the ``nearest_popular=<pkg>`` fact the static typosquat signal recorded,
+    if present in the task's trigger evidence."""
+    for item in task.trigger_evidence:
+        if isinstance(item, str) and item.startswith("nearest_popular="):
+            value = item.split("=", 1)[1].strip()
+            if value:
+                return value
+    return None
 
 
 # =============================================================================
@@ -113,10 +129,20 @@ def run_specialist(
     key = task.dep_key
     node = SPECIALIST_NODE[dimension]
     gather = deps.gather_evidence or _default_gather
+    nearest_popular = _nearest_popular_from(task)
 
-    # 1. deterministic evidence
+    # 1. deterministic evidence. `nearest_popular` (the popular package the name
+    #    resembles) is passed when the gatherer accepts it so the IdentityAgent can
+    #    fetch registry provenance to compare against; custom gatherers that don't take
+    #    the kwarg still work unchanged.
     try:
-        evidence = gather(task.dependency, evidence_dims, deps.artifact_download)
+        try:
+            evidence = gather(
+                task.dependency, evidence_dims, deps.artifact_download,
+                nearest_popular=nearest_popular,
+            )
+        except TypeError:
+            evidence = gather(task.dependency, evidence_dims, deps.artifact_download)
     except Exception as exc:
         logger.exception("evidence gather failed")
         return emit_degraded(node, f"evidence gather failed for {key}: {exc}")

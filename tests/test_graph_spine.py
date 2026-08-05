@@ -57,13 +57,14 @@ def _dep(name="requests", version="2.31.0", ecosystem="python"):
     return Dependency(name=name, version=version, ecosystem=ecosystem, lockfile_path=Path("r.txt"))
 
 
-def _sig(dep, dimension, severity, source="stage3.x"):
+def _sig(dep, dimension, severity, source="stage3.x", evidence=None):
     return Signal(
         dep_key=dep_key(dep),
         dimension=dimension,
         origin=SignalOrigin.STATIC,
         source=source,
         severity=severity,
+        evidence=list(evidence or []),
     )
 
 
@@ -207,6 +208,26 @@ def test_gray_zone_llm_dimension_fans_out():
     assert task.trigger_severity is Severity.MEDIUM
     assert task.trigger_sources == ["stage3.typosquat"]
     assert plan.escalations[dep_key(dep)] is Severity.MEDIUM
+
+
+def test_fan_out_task_carries_static_trigger_evidence():
+    # The gate must forward the static signal's evidence (e.g. nearest_popular) to the
+    # specialist so the IdentityAgent knows which popular package to compare against.
+    dep = _dep(name="redisvl")
+    state = AuditState(
+        dependencies=[dep],
+        signals=[
+            _sig(
+                dep, TrustDimension.IDENTITY, Severity.MEDIUM,
+                "stage3.identity.typosquat",
+                evidence=["nearest_popular=redis", "edit_distance=2"],
+            )
+        ],
+    )
+    plan = plan_gate(state)
+    task = plan.fan_out[0]
+    assert "nearest_popular=redis" in task.trigger_evidence
+    assert "edit_distance=2" in task.trigger_evidence
 
 
 def test_popularity_and_vulnerability_never_fan_out():

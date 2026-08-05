@@ -1,8 +1,21 @@
 """Identity signal: typosquatting via name edit-distance to a popular package.
 
 Cheat-sheet rule: *package name edit distance <= 2 to a popular package ->
-critical*.  This is a purely local, deterministic check — no network — so it is
-the cheapest possible signal and runs on every dependency.
+suspicious*.  This is a purely local, deterministic check — no network — so it
+is the cheapest possible signal and runs on every dependency.
+
+Severity is capped at **MEDIUM**, deliberately *below* the CI-gate/HIGH
+threshold.  Edit distance alone cannot tell a real squat (``reqeusts`` for
+``requests``) from a legitimate companion/derived package that shares a name
+root by design (``redisvl`` for ``redis``, ``ormsgpack`` for ``msgpack``).  So
+this collector only raises a *suspicion* — it never gates CI on its own.  A
+MEDIUM identity finding lands in the post-Stage-3 gray zone
+(CLAUDE.md §2.2-B) and fans out to the ``IdentityAgent`` LLM specialist, which
+examines registry provenance (publisher, canonical repo, age/popularity) vs the
+nearest popular package and *escalates* to HIGH/CRITICAL only on confirmation
+(§4.3 escalate-only).  Using an LLM verifier instead of a static allowlist keeps
+the check un-bypassable: there is no editable list a contributor could quietly
+add a real squat to.
 
 False-positive guard: a name whose *canonical* form (case-folded, separators
 collapsed) equals a popular package is that package, not a typosquat, and is
@@ -97,11 +110,18 @@ class TyposquatCollector(SignalCollector):
             Signal(
                 dep=dep,
                 dimension=Dimension.IDENTITY,
+                # MEDIUM, not CRITICAL: a name near-miss is a *suspicion* to be
+                # verified by the IdentityAgent (registry provenance vs the
+                # nearest popular package), never a standalone CI-gating verdict.
+                # This keeps the check un-bypassable — no editable allowlist — and
+                # routes the finding into the gray zone for LLM escalate-only
+                # confirmation (§2.2-B, §4.3).
+                severity=Severity.MEDIUM,
                 code="identity.typosquat",
-                severity=Severity.CRITICAL,
                 message=(
                     f"Package name {dep.name!r} is within edit distance "
-                    f"{best_dist} of popular package {best_name!r}."
+                    f"{best_dist} of popular package {best_name!r}; "
+                    f"pending LLM identity verification."
                 ),
                 evidence=[
                     f"nearest_popular={best_name}",
@@ -109,8 +129,9 @@ class TyposquatCollector(SignalCollector):
                 ],
                 spoofability=Spoofability.LOW,
                 false_positive_hints=[
-                    "Confirm this is not a legitimate fork, mirror, or "
-                    "namespaced variant of the popular package.",
+                    "Confirm this is not a legitimate fork, mirror, "
+                    "namespaced variant, or official companion/derived package "
+                    "of the popular package.",
                 ],
             )
         ]

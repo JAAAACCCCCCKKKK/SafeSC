@@ -269,6 +269,71 @@ def test_serialize_tolerates_missing_slices():
 
 
 # --------------------------------------------------------------------------- #
+# IdentityAgent — typosquat verification (registry provenance + nearest_popular)
+# --------------------------------------------------------------------------- #
+
+
+def _identity_evidence(nearest=None, registry=None, status="complete"):
+    doc = SimpleNamespace(kind="doc", path="README.md", excerpt="Redis Vector Library", metadata={})
+    return SimpleNamespace(
+        status=status,
+        identity=SimpleNamespace(docs=[doc], nearest_popular=nearest, registry=registry),
+    )
+
+
+def test_identity_serialize_includes_registry_and_nearest_popular():
+    reg = SimpleNamespace(
+        resolved=True, author="Redis Inc.",
+        repo_url="https://github.com/redis/redis-vl-python", homepage=None,
+        summary="Redis Vector Library", total_releases=42,
+        first_release_at="2023-01-01", latest_release_at="2026-01-01",
+    )
+    block = identity_agent._serialize(_identity_evidence(nearest="redis", registry=reg))
+    assert "redis" in block
+    assert "Redis Inc." in block
+    assert "redis-vl-python" in block
+    assert "42" in block
+
+
+def test_identity_serialize_marks_unresolved_registry():
+    reg = SimpleNamespace(resolved=False)
+    block = identity_agent._serialize(_identity_evidence(nearest="requests", registry=reg))
+    assert "unavailable" in block.lower()
+
+
+def test_nearest_popular_extracted_from_trigger_evidence_and_passed_to_gatherer():
+    # The static typosquat signal records `nearest_popular=<pkg>` in trigger_evidence;
+    # run_specialist must extract it and hand it to the evidence gatherer.
+    seen = {}
+
+    def gather(dependency, dimensions, artifact_download=None, *, nearest_popular=None):
+        seen["nearest_popular"] = nearest_popular
+        return _identity_evidence(nearest=nearest_popular, registry=SimpleNamespace(resolved=False))
+
+    task = _task(dimension=TrustDimension.IDENTITY, sources=("stage3.identity.typosquat",))
+    task = task.model_copy(update={"trigger_evidence": ["nearest_popular=redis", "edit_distance=2"]})
+    out = identity_agent.run(
+        task, SpecialistDeps(llm=_llm_returning("clean", 0.2), gather_evidence=gather)
+    )
+    assert seen["nearest_popular"] == "redis"
+    # clean verdict → signal present but no escalation (stays at static MEDIUM)
+    assert "escalations" not in out
+
+
+def test_identity_confirmed_squat_escalates_above_medium():
+    # A confirmed squat (malicious, high confidence) escalates via §4.3 to CRITICAL,
+    # rising above the static MEDIUM floor.
+    task = _task(dimension=TrustDimension.IDENTITY, sources=("stage3.identity.typosquat",))
+    task = task.model_copy(update={"trigger_evidence": ["nearest_popular=requests"]})
+    out = identity_agent.run(
+        task,
+        SpecialistDeps(llm=_llm_returning("malicious", 0.95), gather_evidence=_gatherer()),
+    )
+    assert out["signals"][0].severity == Severity.CRITICAL
+    assert out["escalations"][task.dep_key] == Severity.CRITICAL
+
+
+# --------------------------------------------------------------------------- #
 # build_node (Send adapter)
 # --------------------------------------------------------------------------- #
 

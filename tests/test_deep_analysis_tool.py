@@ -24,6 +24,7 @@ from tools.deep_analysis_tool import (
     EvidenceItem,
     IdentityEvidence,
     ProvenanceEvidence,
+    RegistryProvenance,
     _guess_refs,
     _is_generated,
     _npm_lifecycle_hooks,
@@ -38,6 +39,7 @@ from tools.deep_analysis_tool import (
     extract_install_scripts,
     extract_obfuscation_candidates,
     gather_deep_analysis_evidence,
+    gather_registry_provenance,
 )
 from tools.index.core.models import Dependency
 
@@ -48,7 +50,14 @@ from tools.index.core.models import Dependency
 
 @pytest.mark.parametrize(
     "model",
-    [EvidenceItem, BehaviorEvidence, ProvenanceEvidence, IdentityEvidence, DeepAnalysisEvidence],
+    [
+        EvidenceItem,
+        BehaviorEvidence,
+        ProvenanceEvidence,
+        IdentityEvidence,
+        RegistryProvenance,
+        DeepAnalysisEvidence,
+    ],
 )
 def test_evidence_models_have_no_verdict_fields(model):
     forbidden = {"verdict", "score", "severity"}
@@ -254,8 +263,92 @@ def test_gather_degrades_without_source_url(monkeypatch):
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
     monkeypatch.setattr(m, "extract_recent_commits", lambda req, depth=20: [])
     req = DeepAnalysisRequest(name="x", version="1", ecosystem="python")
-    ev = m.gather_deep_analysis_evidence(req, dimensions=("behavior", "identity", "provenance"))
+    # Inject a no-op registry lookup so the identity path never touches the network.
+    ev = m.gather_deep_analysis_evidence(
+        req,
+        dimensions=("behavior", "identity", "provenance"),
+        registry_lookup=lambda *a, **k: None,
+    )
     assert ev.status in ("degraded", "partial")
     assert ev.degraded_reasons
     assert ev.behavior.install_scripts == []
     assert ev.identity.docs == []
+
+
+# --------------------------------------------------------------------------- #
+# identity registry provenance (typosquat discrimination)
+# --------------------------------------------------------------------------- #
+
+
+def test_gather_registry_provenance_maps_facts():
+    facts = {
+        "author": "Redis Inc.",
+        "repo_url": "https://github.com/redis/redis-vl-python",
+        "homepage": "https://docs.redisvl.com",
+        "summary": "Redis Vector Library",
+        "total_releases": 42,
+        "first_release_at": "2023-01-01T00:00:00Z",
+        "latest_release_at": "2026-01-01T00:00:00Z",
+    }
+    req = DeepAnalysisRequest(name="redisvl", version="0.25.0", ecosystem="python")
+    reg = gather_registry_provenance(req, registry_lookup=lambda *a, **k: facts)
+    assert reg.resolved is True
+    assert reg.author == "Redis Inc."
+    assert reg.repo_url.endswith("redis-vl-python")
+    assert reg.total_releases == 42
+
+
+def test_gather_registry_provenance_unresolved_on_none():
+    req = DeepAnalysisRequest(name="whatever", version="1", ecosystem="python")
+    reg = gather_registry_provenance(req, registry_lookup=lambda *a, **k: None)
+    assert reg.resolved is False
+    assert reg.author is None
+
+
+def test_gather_registry_provenance_degrades_on_lookup_error():
+    def boom(*a, **k):
+        raise RuntimeError("network down")
+
+    req = DeepAnalysisRequest(name="whatever", version="1", ecosystem="python")
+    reg = gather_registry_provenance(req, registry_lookup=boom)
+    assert reg.resolved is False
+
+
+def test_gather_identity_includes_nearest_popular_and_registry(monkeypatch):
+    from tools import deep_analysis_tool as m
+
+    # No clone (so no docs); registry lookup injected — never touches the network.
+    monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
+    facts = {"author": "Redis Inc.", "repo_url": "https://github.com/redis/redis-vl-python",
+             "total_releases": 42}
+    req = DeepAnalysisRequest(name="redisvl", version="0.25.0", ecosystem="python")
+    ev = m.gather_deep_analysis_evidence(
+        req,
+        dimensions=("identity",),
+        nearest_popular="redis",
+        registry_lookup=lambda *a, **k: facts,
+    )
+    assert ev.identity.nearest_popular == "redis"
+    assert ev.identity.registry.resolved is True
+    assert ev.identity.registry.author == "Redis Inc."
+    assert ev.identity.registry.total_releases == 42
+
+
+def test_gather_identity_registry_fetched_without_clone():
+    # A squat often has no real repo; registry provenance must still be attempted
+    # even when the source clone is unavailable.
+    from tools import deep_analysis_tool as m
+
+    called = {"n": 0}
+
+    def lookup(name, version, ecosystem):
+        called["n"] += 1
+        return None
+
+    req = DeepAnalysisRequest(name="x", version="1", ecosystem="python")
+    ev = m.gather_deep_analysis_evidence(
+        req, dimensions=("identity",), registry_lookup=lookup,
+    )
+    assert called["n"] == 1
+    assert ev.identity.registry.resolved is False
+    assert any("registry provenance unavailable" in r for r in ev.degraded_reasons)

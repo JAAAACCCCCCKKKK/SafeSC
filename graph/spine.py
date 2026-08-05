@@ -63,13 +63,20 @@ class LockfileRef(BaseModel):
 
 class SpecialistTask(BaseModel):
     """Payload a fan-out `Send` carries to a specialist node. The specialist reads the
-    full signal set from state; this just names the dep and why it was flagged."""
+    full signal set from state; this just names the dep and why it was flagged.
+
+    `trigger_evidence` carries the deterministic evidence strings from the static
+    signals that put this dep in the gray zone (e.g. ``nearest_popular=redis`` from
+    the typosquat collector), so a specialist has the static facts without re-reading
+    state — the IdentityAgent uses it to know which popular package to compare against.
+    """
 
     dep_key: str
     dependency: Dependency
     dimension: TrustDimension
     trigger_severity: Severity
     trigger_sources: list[str] = Field(default_factory=list)
+    trigger_evidence: list[str] = Field(default_factory=list)
 
 
 class SpineTools(Protocol):
@@ -324,6 +331,17 @@ def _dimension_severity(signals: list[Signal], key: str) -> dict[TrustDimension,
     return out
 
 
+def _dimension_evidence(signals: list[Signal], key: str, dimension: TrustDimension) -> list[str]:
+    """Collect the deterministic evidence strings from the static signals that put
+    *key* in the gray zone for *dimension* (e.g. ``nearest_popular=redis``), so a
+    fan-out task can carry the static facts to its specialist."""
+    ev: list[str] = []
+    for s in signals:
+        if s.dep_key == key and s.dimension == dimension and s.origin == SignalOrigin.STATIC:
+            ev.extend(s.evidence)
+    return ev
+
+
 def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePlan:
     """Deterministic gate: record each dep's static severity and fan out a specialist
     per LLM-capable dimension in the gray band [gray_floor, decided_ceiling). Cap-aware
@@ -349,6 +367,7 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
                         dimension=dim,
                         trigger_severity=sev,
                         trigger_sources=sources,
+                        trigger_evidence=_dimension_evidence(state.signals, key, dim),
                     )
                 )
 

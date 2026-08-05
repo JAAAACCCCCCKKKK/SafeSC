@@ -94,8 +94,34 @@ class ProvenanceEvidence(BaseModel):
     recent_commits: list[EvidenceItem] = Field(default_factory=list)
 
 
+class RegistryProvenance(BaseModel):
+    """Deterministic registry facts about a package's *identity* — the strongest
+    discriminator between a legitimate companion/derived package and a typosquat.
+
+    Facts only, no judgement: the IdentityAgent compares these (publisher, canonical
+    repo, maturity/age) against the popular package the name resembles.
+    """
+
+    author: Optional[str] = Field(None, description="Publisher/author as the registry reports it")
+    repo_url: Optional[str] = Field(None, description="Canonical source repository, if declared")
+    homepage: Optional[str] = Field(None, description="Project homepage, if declared")
+    summary: Optional[str] = Field(None, description="One-line project description from the registry")
+    total_releases: int = Field(0, description="Number of published versions (maturity proxy)")
+    first_release_at: Optional[str] = Field(None, description="ISO timestamp of the earliest release")
+    latest_release_at: Optional[str] = Field(None, description="ISO timestamp of the most recent release")
+    resolved: bool = Field(False, description="True if the registry lookup returned data")
+
+
 class IdentityEvidence(BaseModel):
     docs: list[EvidenceItem] = Field(default_factory=list, description="README / SECURITY / doc text for coercion analysis")
+    nearest_popular: Optional[str] = Field(
+        None,
+        description="The popular package this name is a near-miss of (from the static typosquat signal), if any",
+    )
+    registry: RegistryProvenance = Field(
+        default_factory=RegistryProvenance,
+        description="Registry provenance facts for typosquat vs legitimate-package discrimination",
+    )
 
 
 class DeepAnalysisRequest(BaseModel):
@@ -488,6 +514,92 @@ def extract_docs(repo: ClonedRepo) -> list[EvidenceItem]:
 
 
 # =============================================================================
+# Primitive 3b — registry provenance (IdentityAgent — typosquat discrimination)
+# =============================================================================
+# The strongest signal for "is this a squat or a legitimate near-name package" is
+# registry provenance: who published it, its canonical repo, and how mature it is.
+# This bridges to the async Stage-3 registry_meta fetchers via an injectable
+# callable so the deep-analysis module stays sync and unit-testable with a fake.
+
+RegistryLookup = "Callable[[str, str, str], Optional[dict]]"  # (name, version, ecosystem) -> facts dict
+
+
+def _default_registry_lookup(name: str, version: str, ecosystem: str) -> Optional[dict]:
+    """Fetch package-level registry metadata for identity analysis.
+
+    Reuses the tested Stage-3 fetchers (`registry_meta.get_package_metadata`) over a
+    short-lived rate-limited session, run to completion synchronously. Returns a plain
+    dict of identity facts, or None if the registry/ecosystem is unsupported or the
+    fetch fails (degrades gracefully — the specialist still has the docs slice)."""
+    import asyncio
+
+    try:
+        from tools.index.core.models import Dependency  # type: ignore
+        from tools.scan.signals.provenance.http import RateLimitedSession  # type: ignore
+        from tools.scan.signals.registry_meta import get_package_metadata  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("registry lookup unavailable: %s", exc)
+        return None
+
+    async def _run() -> Optional[dict]:
+        # lockfile_path is required by the model but irrelevant to a registry lookup.
+        dep = Dependency(name=name, version=version, ecosystem=ecosystem, lockfile_path=Path("."))
+        async with RateLimitedSession() as session:
+            meta = await get_package_metadata(dep, session)
+        if meta is None:
+            return None
+        return {
+            "author": meta.author,
+            "repo_url": meta.repo_url,
+            "homepage": meta.homepage,
+            "summary": meta.summary,
+            "total_releases": meta.total_releases,
+            "first_release_at": meta.first_release_at,
+            "latest_release_at": meta.latest_release_at,
+        }
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_run())
+        # Already inside a loop (rare for the sync specialist path): use a fresh loop
+        # in a worker thread so we never nest asyncio.run().
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_run())).result()
+    except Exception as exc:
+        logger.warning("registry lookup failed for %s@%s (%s): %s", name, version, ecosystem, exc)
+        return None
+
+
+def gather_registry_provenance(
+    req: "DeepAnalysisRequest",
+    registry_lookup=None,
+) -> RegistryProvenance:
+    """Populate a RegistryProvenance from the registry, degrading to unresolved."""
+    lookup = registry_lookup or _default_registry_lookup
+    try:
+        facts = lookup(req.name, req.version, req.ecosystem)
+    except Exception as exc:
+        logger.warning("registry provenance lookup raised for %s: %s", req.name, exc)
+        facts = None
+    if not facts:
+        return RegistryProvenance(resolved=False)
+    return RegistryProvenance(
+        author=facts.get("author"),
+        repo_url=facts.get("repo_url"),
+        homepage=facts.get("homepage"),
+        summary=facts.get("summary"),
+        total_releases=int(facts.get("total_releases") or 0),
+        first_release_at=facts.get("first_release_at"),
+        latest_release_at=facts.get("latest_release_at"),
+        resolved=True,
+    )
+
+
+# =============================================================================
 # Primitive 4 — artifact-vs-source provenance diff (ProvenanceAgent)
 # =============================================================================
 
@@ -621,11 +733,19 @@ def gather_deep_analysis_evidence(
     req: DeepAnalysisRequest,
     dimensions: Iterable[Dimension] = ("behavior", "provenance", "identity"),
     artifact_download=None,
+    *,
+    nearest_popular: Optional[str] = None,
+    registry_lookup=None,
 ) -> DeepAnalysisEvidence:
     """Run the deterministic primitives needed by the requested specialists.
 
     A specialist node passes only its own dimension(s) so it doesn't pay for evidence
     it won't read. Every failure degrades a slice, never the whole bundle.
+
+    For the identity dimension, `nearest_popular` (the popular package the name
+    resembles, from the static typosquat signal) and registry provenance are added so
+    the IdentityAgent can distinguish a legitimate companion package from a squat.
+    `registry_lookup` is injectable for testing.
     """
     dims = set(dimensions)
     evidence = DeepAnalysisEvidence(request=req)
@@ -645,12 +765,23 @@ def gather_deep_analysis_evidence(
             logger.exception("behavior extraction failed")
             evidence.note_degraded(f"behavior extraction error: {exc}")
 
-    if "identity" in dims and repo is not None:
+    if "identity" in dims:
+        evidence.identity.nearest_popular = nearest_popular
+        if repo is not None:
+            try:
+                evidence.identity.docs = extract_docs(repo)
+            except Exception as exc:
+                logger.exception("identity doc extraction failed")
+                evidence.note_degraded(f"identity doc extraction error: {exc}")
+        # Registry provenance does not need a clone — fetch it even when the source
+        # repo is unavailable (a squat often has no real repo, which is itself telling).
         try:
-            evidence.identity.docs = extract_docs(repo)
+            evidence.identity.registry = gather_registry_provenance(req, registry_lookup)
+            if not evidence.identity.registry.resolved:
+                evidence.note_degraded("identity registry provenance unavailable")
         except Exception as exc:
-            logger.exception("identity extraction failed")
-            evidence.note_degraded(f"identity extraction error: {exc}")
+            logger.exception("identity registry provenance failed")
+            evidence.note_degraded(f"identity registry provenance error: {exc}")
 
     if "provenance" in dims:
         try:
@@ -690,12 +821,22 @@ def provenance_evidence_tool(request_json: str) -> str:
 
 
 @tool
-def identity_doc_evidence_tool(request_json: str) -> str:
-    """Gather README/doc text for coercion/social-engineering analysis.
-    Input: JSON matching DeepAnalysisRequest. Returns DeepAnalysisEvidence JSON
-    (identity slice populated). Evidence only — contains no verdict."""
+def identity_evidence_tool(request_json: str, nearest_popular: Optional[str] = None) -> str:
+    """Gather identity evidence for one dependency: README/SECURITY doc text (for
+    coercion/social-engineering analysis) AND registry provenance (publisher, canonical
+    repo, release history) for typosquat-vs-legitimate discrimination.
+    Input: JSON matching DeepAnalysisRequest; optional `nearest_popular` = the popular
+    package this name resembles (from the static typosquat signal). Returns
+    DeepAnalysisEvidence JSON (identity slice populated). Evidence only — no verdict."""
     req = DeepAnalysisRequest.model_validate_json(request_json)
-    return gather_deep_analysis_evidence(req, dimensions=("identity",)).model_dump_json()
+    return gather_deep_analysis_evidence(
+        req, dimensions=("identity",), nearest_popular=nearest_popular
+    ).model_dump_json()
+
+
+# Backwards-compatible alias: the identity tool used to gather docs only; it now also
+# fetches registry provenance. Keep the old name working for any existing wiring.
+identity_doc_evidence_tool = identity_evidence_tool
 
 
 __all__ = [
@@ -704,8 +845,10 @@ __all__ = [
     "BehaviorEvidence",
     "ProvenanceEvidence",
     "IdentityEvidence",
+    "RegistryProvenance",
     "EvidenceItem",
     "gather_deep_analysis_evidence",
+    "gather_registry_provenance",
     "safe_clone",
     "extract_install_scripts",
     "extract_obfuscation_candidates",
@@ -714,5 +857,6 @@ __all__ = [
     "extract_recent_commits",
     "behavior_evidence_tool",
     "provenance_evidence_tool",
+    "identity_evidence_tool",
     "identity_doc_evidence_tool",
 ]

@@ -145,11 +145,16 @@ class TestTyposquatCollector:
     def test_dimension(self):
         assert self.c.dimension == Dimension.IDENTITY
 
-    async def test_near_miss_flags_critical(self):
+    async def test_near_miss_flags_medium(self):
+        # Capped at MEDIUM (below the CI/HIGH gate) so the near-miss is routed to
+        # the IdentityAgent for LLM verification rather than gating on its own.
         sigs = await self.c.collect(_dep("reqeusts"), None)
         assert len(sigs) == 1
         assert sigs[0].code == "identity.typosquat"
-        assert sigs[0].severity == Severity.CRITICAL
+        assert sigs[0].severity == Severity.MEDIUM
+        # MEDIUM sits below HIGH in the ordered severity ladder (string enum, so
+        # order is via .rank, not <): it must not gate CI on its own.
+        assert sigs[0].severity.rank < Severity.HIGH.rank
         assert sigs[0].spoofability == Spoofability.LOW
 
     async def test_exact_popular_name_no_signal(self):
@@ -190,7 +195,7 @@ class TestTyposquatCollector:
     async def test_near_miss_per_ecosystem(self, name, ecosystem, nearest):
         sigs = await self.c.collect(_dep(name, ecosystem=ecosystem), None)
         assert len(sigs) == 1
-        assert sigs[0].severity == Severity.CRITICAL
+        assert sigs[0].severity == Severity.MEDIUM
         assert f"nearest_popular={nearest}" in sigs[0].evidence
 
     @pytest.mark.parametrize(
@@ -953,6 +958,80 @@ class TestPackageMetadata:
     async def test_get_package_metadata_unsupported_none(self):
         session = MagicMock()
         assert await get_package_metadata(_dep(ecosystem="go"), session) is None
+
+    async def test_pypi_identity_fields_populated(self):
+        from tools.scan.signals.registry_meta import _pypi_package_metadata
+
+        data = {
+            "info": {
+                "author": "Redis Inc.",
+                "summary": "Redis Vector Library",
+                "home_page": "https://docs.redisvl.com",
+                "project_urls": {"Source": "https://github.com/redis/redis-vl-python"},
+            },
+            "releases": {
+                "0.1.0": [{"yanked": False, "upload_time_iso_8601": "2023-01-01T00:00:00Z"}],
+                "0.25.0": [{"yanked": False, "upload_time_iso_8601": "2026-01-01T00:00:00Z"}],
+            },
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _pypi_package_metadata(_dep(version="0.25.0"), session)
+        assert meta.author == "Redis Inc."
+        assert meta.repo_url == "https://github.com/redis/redis-vl-python"
+        assert meta.summary == "Redis Vector Library"
+        assert meta.total_releases == 2
+        assert meta.first_release_at == "2023-01-01T00:00:00Z"
+        assert meta.latest_release_at == "2026-01-01T00:00:00Z"
+
+    async def test_npm_identity_fields_populated(self):
+        from tools.scan.signals.registry_meta import _npm_package_metadata
+
+        data = {
+            "author": {"name": "Charles Stover"},
+            "description": "React global state",
+            "homepage": "https://example.com",
+            "repository": {"url": "git+https://github.com/CharlesStover/reactn.git"},
+            "time": {"created": "2018-01-01T00:00:00Z", "modified": "2024-01-01T00:00:00Z",
+                     "2.2.7": "2020-01-01T00:00:00Z"},
+            "versions": {"2.2.7": {}},
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _npm_package_metadata(_dep(version="2.2.7", ecosystem="javascript"), session)
+        assert meta.author == "Charles Stover"
+        assert meta.repo_url == "https://github.com/CharlesStover/reactn"
+        assert meta.summary == "React global state"
+        assert meta.first_release_at == "2018-01-01T00:00:00Z"
+        assert meta.latest_release_at == "2024-01-01T00:00:00Z"
+
+    async def test_crates_identity_fields_populated(self):
+        from tools.scan.signals.registry_meta import _crates_package_metadata
+
+        data = {
+            "crate": {
+                "repository": "https://github.com/RustCrypto/hashes",
+                "homepage": "https://rustcrypto.org",
+                "description": "SHA-3 hash",
+                "created_at": "2017-01-01T00:00:00Z",
+                "updated_at": "2026-05-15T00:00:00Z",
+            },
+            "versions": [
+                {"num": "0.10.0", "yanked": False, "created_at": "2020-01-01T00:00:00Z"},
+                {"num": "0.10.8", "yanked": False, "created_at": "2023-01-01T00:00:00Z"},
+            ],
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _crates_package_metadata(_dep(version="0.10.8", ecosystem="rust"), session)
+        assert meta.repo_url == "https://github.com/RustCrypto/hashes"
+        assert meta.summary == "SHA-3 hash"
+        assert meta.total_releases == 2
+        assert meta.first_release_at == "2017-01-01T00:00:00Z"
+        assert meta.latest_release_at == "2026-05-15T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,16 @@ class PackageMetadata:
     version_yanked: bool = False   # is dep.version yanked/withdrawn?
     has_install_script: bool = False  # resolved version declares install hooks
 
+    # --- Identity / provenance descriptors (used by the IdentityAgent to tell a
+    #     legitimate companion package from a typosquat; §2.3). All best-effort. ---
+    author: str | None = None          # publisher/author string as the registry reports it
+    repo_url: str | None = None        # canonical source repo, if declared
+    homepage: str | None = None        # project homepage, if declared
+    summary: str | None = None         # one-line project description
+    total_releases: int = 0            # number of published versions (age/maturity proxy)
+    first_release_at: str | None = None  # ISO timestamp of the earliest release, if known
+    latest_release_at: str | None = None  # ISO timestamp of the most recent release, if known
+
 
 # --------------------------------------------------------------------------- #
 # URL normalisation helpers
@@ -163,6 +173,25 @@ async def _pypi_package_metadata(
         if isinstance(files, list) and files and all(f.get("yanked") for f in files):
             yanked.add(ver)
 
+    info: dict = data.get("info") or {}
+    author = info.get("author") or info.get("author_email") or None
+    if not author:
+        author = info.get("maintainer") or info.get("maintainer_email") or None
+    project_urls: dict = info.get("project_urls") or {}
+    repo_url = None
+    for key in ("Source", "Source Code", "Repository", "Code", "GitHub"):
+        repo_url = _normalise_repo_url(project_urls.get(key))
+        if repo_url:
+            break
+    if not repo_url:
+        for value in project_urls.values():
+            cand = _normalise_repo_url(value)
+            if cand and _looks_like_repo(cand):
+                repo_url = cand
+                break
+
+    first_at, latest_at = _pypi_release_span(releases)
+
     # PEP 440-aware membership so an equal-but-non-canonical pin (e.g. 2.31 vs 2.31.0)
     # isn't misreported as absent/not-yanked.
     return PackageMetadata(
@@ -170,7 +199,30 @@ async def _pypi_package_metadata(
         yanked_versions=frozenset(yanked),
         version_present=_pypi_contains(published, dep.version) if published else True,
         version_yanked=_pypi_contains(frozenset(yanked), dep.version),
+        author=author,
+        repo_url=repo_url,
+        homepage=_normalise_repo_url(info.get("home_page")) or (info.get("home_page") or None),
+        summary=(info.get("summary") or None),
+        total_releases=len(published),
+        first_release_at=first_at,
+        latest_release_at=latest_at,
     )
+
+
+def _pypi_release_span(releases: dict) -> tuple[str | None, str | None]:
+    """Earliest and latest upload timestamps across all release files, ISO strings."""
+    stamps: list[str] = []
+    for files in releases.values():
+        if not isinstance(files, list):
+            continue
+        for f in files:
+            ts = f.get("upload_time_iso_8601") or f.get("upload_time")
+            if ts:
+                stamps.append(ts)
+    if not stamps:
+        return None, None
+    stamps.sort()
+    return stamps[0], stamps[-1]
 
 
 # --------------------------------------------------------------------------- #
@@ -232,10 +284,37 @@ async def _npm_package_metadata(
             hook in scripts for hook in ("preinstall", "install", "postinstall")
         )
 
+    author = data.get("author")
+    if isinstance(author, dict):
+        author = author.get("name") or author.get("email")
+    elif not isinstance(author, str):
+        author = None
+
+    repository = data.get("repository")
+    raw_repo: str | None = None
+    if isinstance(repository, dict):
+        raw_repo = repository.get("url")
+    elif isinstance(repository, str):
+        raw_repo = repository
+
+    time_map = data.get("time") or {}
+    stamps = [v for k, v in time_map.items() if k not in ("created", "modified")]
+    stamps = [s for s in stamps if isinstance(s, str)]
+    stamps.sort()
+    first_at = time_map.get("created") or (stamps[0] if stamps else None)
+    latest_at = time_map.get("modified") or (stamps[-1] if stamps else None)
+
     return PackageMetadata(
         published_versions=published,
         version_present=dep.version in published if published else True,
         has_install_script=has_install,
+        author=author,
+        repo_url=_normalise_repo_url(raw_repo),
+        homepage=(data.get("homepage") or None),
+        summary=(data.get("description") or None),
+        total_releases=len(published),
+        first_release_at=first_at,
+        latest_release_at=latest_at,
     )
 
 
@@ -258,6 +337,7 @@ async def _crates_package_metadata(
     versions = data.get("versions") or []
     published: set[str] = set()
     yanked: set[str] = set()
+    created_stamps: list[str] = []
     for v in versions:
         num = v.get("num")
         if not num:
@@ -265,6 +345,14 @@ async def _crates_package_metadata(
         published.add(num)
         if v.get("yanked"):
             yanked.add(num)
+        ts = v.get("created_at")
+        if isinstance(ts, str):
+            created_stamps.append(ts)
+
+    crate: dict = data.get("crate") or {}
+    created_stamps.sort()
+    first_at = crate.get("created_at") or (created_stamps[0] if created_stamps else None)
+    latest_at = crate.get("updated_at") or (created_stamps[-1] if created_stamps else None)
 
     published_fs = frozenset(published)
     return PackageMetadata(
@@ -272,6 +360,12 @@ async def _crates_package_metadata(
         yanked_versions=frozenset(yanked),
         version_present=dep.version in published_fs if published_fs else True,
         version_yanked=dep.version in yanked,
+        repo_url=_normalise_repo_url(crate.get("repository")) or (crate.get("repository") or None),
+        homepage=(crate.get("homepage") or None),
+        summary=(crate.get("description") or None),
+        total_releases=len(published_fs),
+        first_release_at=first_at,
+        latest_release_at=latest_at,
     )
 
 
