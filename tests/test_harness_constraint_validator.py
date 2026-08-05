@@ -113,6 +113,40 @@ def test_registry_facts_ignored_when_unresolved():
     assert cv.unresolved_refs(out, cv.evidence_paths(bundle)) == ["see phantom.py"]
 
 
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "consistent with 'or-' prefixed sibling projects (e.g. orjson) that are notable",
+        "the summary matches the popular library, i.e. it is a legitimate derived project",
+        "mature release history, etc. — nothing resembling a squat-and-abandon pattern",
+        "package version 1.12 has been published for years",
+    ],
+)
+def test_prose_citations_are_not_treated_as_file_refs(prose):
+    # Registry-provenance evidence invites prose citations. Incidental dotted tokens
+    # (e.g., i.e., etc., version numbers) must not be mistaken for filenames and rejected.
+    out = _out(verdict="clean", confidence=0.9, evidence=[prose])
+    assert cv.unresolved_refs(out, set()) == []
+
+
+def test_looks_like_file_citation_distinguishes_files_from_prose():
+    assert cv._looks_like_file_citation("scripts/setup.js") is True
+    assert cv._looks_like_file_citation("build.rs") is True
+    assert cv._looks_like_file_citation("Cargo.toml") is True
+    assert cv._looks_like_file_citation("e.g") is False
+    assert cv._looks_like_file_citation("i.e") is False
+    assert cv._looks_like_file_citation("1.12") is False  # a version, not a file
+
+
+def test_real_file_citation_still_rejected_when_absent():
+    # The security check is preserved: a real-looking file the package never contained
+    # is still flagged even amid prose.
+    out = _out(evidence=["the payload lives in src/exfiltrate.py per the analysis"])
+    assert cv.unresolved_refs(out, {"README.md"}) == [
+        "the payload lives in src/exfiltrate.py per the analysis"
+    ]
+
+
 def test_check_escalate_only():
     assert cv.check_escalate_only(Severity.HIGH, Severity.LOW) is True
     assert cv.check_escalate_only(Severity.CLEAN, Severity.CLEAN) is True

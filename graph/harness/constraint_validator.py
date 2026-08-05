@@ -21,6 +21,38 @@ _VALID_VERDICTS = {"clean", "suspicious", "malicious"}
 # path-like tokens inside a free-text evidence ref (e.g. "scripts/setup.js", "build.rs")
 _PATH_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z0-9]{1,6}")
 
+# Dotted tokens that are English prose, not file citations. Registry-provenance evidence
+# invites prose citations ("... e.g. orjson ..."), and a bare "e.g"/"i.e" would otherwise
+# be mistaken for a filename and fail the ref check, wasting a repair round. These are
+# never real file references, so they are stripped before path resolution.
+_PROSE_DOTTED = frozenset({
+    "e.g", "i.e", "etc", "vs", "cf", "et.al", "a.k.a", "aka",
+})
+# Suffixes that make a dotted token plausibly a real source/config file. A dotted token
+# whose final extension is NOT one of these AND that contains no path separator is treated
+# as prose (e.g. a version like "1.12" or an abbreviation), not a file citation.
+_FILE_EXTENSIONS = frozenset({
+    "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "rs", "go", "java", "kt",
+    "json", "toml", "cfg", "ini", "txt", "md", "rst", "sh", "ps1", "bat",
+    "yml", "yaml", "lock", "cff", "gradle", "xml", "c", "h", "cpp", "rb",
+})
+
+
+def _looks_like_file_citation(token: str) -> bool:
+    """True if a `_PATH_TOKEN` match is plausibly a real file reference rather than prose.
+
+    A token counts as a file citation if it contains a path separator (``/``) OR ends in a
+    known source/config extension. Common prose abbreviations (``e.g``, ``i.e`` …) and
+    numeric-looking tokens (versions like ``1.12``) are excluded so they don't trigger a
+    spurious "file not in package" rejection on an otherwise-valid registry-fact citation."""
+    lowered = token.lower()
+    if lowered in _PROSE_DOTTED:
+        return False
+    if "/" in token:
+        return True
+    ext = lowered.rsplit(".", 1)[-1]
+    return ext in _FILE_EXTENSIONS
+
 
 class ValidationError(Exception):
     """Non-transient by construction — auto-repair (§2.7.2) must not retry these."""
@@ -110,12 +142,17 @@ def _registry_fact_tokens(bundle) -> set[str]:
 
 
 def unresolved_refs(out: LLMOutput, known_paths: set[str]) -> list[str]:
-    """Evidence refs that cite a file path absent from the gathered evidence. Refs with
-    no path-like token are allowed (paraphrase can't be path-checked) — we only reject a
-    citation that names a file the package never contained."""
+    """Evidence refs that cite a file path absent from the gathered evidence.
+
+    Only tokens that plausibly name a *file* (``_looks_like_file_citation``) are checked;
+    prose abbreviations, version numbers, and other incidental dotted tokens are ignored,
+    as are refs with no path-like token at all (paraphrase can't be path-checked). We
+    reject only a citation that names a file the package never contained — and, defensively,
+    a file citation is accepted if the ref *also* matches a known registry fact, so a mixed
+    prose+fact citation is not spuriously failed."""
     bad: list[str] = []
     for ref in out.evidence:
-        cited = set(_PATH_TOKEN.findall(ref))
+        cited = {t for t in _PATH_TOKEN.findall(ref) if _looks_like_file_citation(t)}
         if not cited:
             continue
         if not any(any(c == p or p.endswith(c) or c.endswith(p) for p in known_paths) for c in cited):
