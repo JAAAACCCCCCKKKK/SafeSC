@@ -21,6 +21,29 @@ def test_signals_subcommand(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out) == []
 
 
+def test_help_flag_prints_usage_and_exits_zero(capsys):
+    assert scan_main.main(["--help"]) == 0
+    out = capsys.readouterr().out
+    assert "usage:" in out
+    assert "scan" in out
+
+
+def test_short_help_flag_prints_usage_and_exits_zero(capsys):
+    assert scan_main.main(["-h"]) == 0
+    assert "usage:" in capsys.readouterr().out
+
+
+def test_help_does_not_run_verification_or_network(monkeypatch, capsys):
+    # The legacy default verifies hashes against registries over the network. --help must
+    # short-circuit before discovery, so a raising discover() proves no I/O is triggered.
+    def _boom(*a, **k):
+        raise AssertionError("discover() was called while handling --help")
+
+    monkeypatch.setattr(scan_main, "discover", _boom)
+    assert scan_main.main(["--help"]) == 0
+    assert "usage:" in capsys.readouterr().out
+
+
 def test_legacy_default_is_verify(tmp_path, capsys):
     assert scan_main.main([str(tmp_path)]) == 0
     assert json.loads(capsys.readouterr().out) == []

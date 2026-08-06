@@ -27,7 +27,23 @@ _SUBCOMMANDS = frozenset({"discover", "parse"})
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="index",
+        usage="index [--json] [path]\n       index <command> [path] [options]",
         description="SafeSC Stage 0-1: discover and normalise dependency lockfiles.",
+        epilog=(
+            "Default (flag) interface:\n"
+            "  index [path]           Stage 0 - discover lockfiles (human-readable; "
+            "default path: current directory)\n"
+            "  index --json [path]    Stage 1 - parse lockfiles into a JSON dependency "
+            "array\n\n"
+            "Use 'index <command> --help' for a subcommand's options."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Mirror the legacy top-level flag so it appears in `index --help` and so the parser
+    # can render accurate usage; the legacy path (not this parser) actually consumes it.
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Stage 1: parse discovered lockfiles into a JSON dependency array.",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -84,6 +100,14 @@ def _run_legacy(args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+
+    # Help must never run discovery/parsing (no filesystem walk, no I/O). Handle it up
+    # front for the legacy flag interface, which otherwise treats `--help` as an unknown
+    # `--` flag and silently runs the default action. Subcommand help (e.g.
+    # `index discover --help`) is left to argparse below.
+    if args and args[0] in {"-h", "--help"}:
+        _build_parser().print_help()
+        return 0
 
     # Route to the unified subcommand interface only when the first token is a
     # known subcommand; otherwise fall back to the legacy flag interface so

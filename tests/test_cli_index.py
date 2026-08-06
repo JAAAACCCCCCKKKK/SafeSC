@@ -34,6 +34,27 @@ def test_no_command_prints_help(capsys):
     capsys.readouterr()
 
 
+def test_help_flag_prints_usage_and_exits_zero(capsys):
+    assert index_main.main(["--help"]) == 0
+    out = capsys.readouterr().out
+    assert "usage:" in out
+    assert "index" in out
+
+
+def test_short_help_flag_prints_usage_and_exits_zero(capsys):
+    assert index_main.main(["-h"]) == 0
+    assert "usage:" in capsys.readouterr().out
+
+
+def test_help_does_not_run_discovery(monkeypatch, capsys):
+    def _boom(*a, **k):  # discovery must not run for --help
+        raise AssertionError("discover() was called while handling --help")
+
+    monkeypatch.setattr(index_main, "discover", _boom)
+    assert index_main.main(["--help"]) == 0
+    assert "usage:" in capsys.readouterr().out
+
+
 def test_legacy_json_flag(tmp_path, capsys):
     assert index_main.main(["--json", str(tmp_path)]) == 0
     assert json.loads(capsys.readouterr().out) == []

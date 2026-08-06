@@ -2,7 +2,9 @@
 
 Sole inter-node channel. Concurrently-written fields carry channel reducers so
 out-of-order specialist fan-in merges deterministically (see reducers below).
-Requires LangGraph >= 0.2 for Pydantic state; else use a TypedDict with the same fields.
+On the pinned LangGraph 1.x range, Pydantic state with `Annotated` reducers is fully
+supported. (Historical aside: on much older 0.x builds this would have needed a TypedDict
+with the same Annotated fields; that fallback is no longer relevant.)
 """
 
 from __future__ import annotations

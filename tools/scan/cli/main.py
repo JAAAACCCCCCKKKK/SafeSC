@@ -30,7 +30,28 @@ _SUBCOMMANDS = frozenset({"verify", "signals"})
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scan",
+        usage="scan [--verify | --signals] [path]\n       scan <command> [path]",
         description="SafeSC Stage 2-3: verify provenance and collect trust signals.",
+        epilog=(
+            "Default (flag) interface:\n"
+            "  scan [path]            Stage 2 - verify lockfile hashes vs registries "
+            "(JSON; default path: current directory)\n"
+            "  scan --verify [path]   Stage 2 - hash verification (JSON; the default)\n"
+            "  scan --signals [path]  Stage 3 - collect cheap trust signals (JSON)\n\n"
+            "Use 'scan <command> --help' for a subcommand's options."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Mirror the legacy top-level flags so they show up in `scan --help`; the legacy path
+    # (not this parser) actually consumes them.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--verify", action="store_true",
+        help="Stage 2: verify lockfile hashes against registry hashes (JSON; default).",
+    )
+    mode.add_argument(
+        "--signals", action="store_true",
+        help="Stage 3: collect cheap trust signals over every dependency (JSON).",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -92,6 +113,13 @@ def _run_legacy(args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+
+    # Help must never run verification/signal collection — the legacy default makes real
+    # network requests to registries, so a user asking for help must not trigger outbound
+    # HTTP. Handle `-h`/`--help` up front; subcommand help is left to argparse below.
+    if args and args[0] in {"-h", "--help"}:
+        _build_parser().print_help()
+        return 0
 
     if args and args[0] in _SUBCOMMANDS:
         return _run_subcommand(args)
