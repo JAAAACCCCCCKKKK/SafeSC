@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from graph.report_agent import (
+from safesc.graph.report_agent import (
     ScoreConfig,
     _dep_breakdown,
     _top_reason,
@@ -18,8 +18,8 @@ from graph.report_agent import (
     report_node,
     score,
 )
-from graph.spine import NODE_REPORT
-from graph.state import (
+from safesc.graph.spine import NODE_REPORT
+from safesc.graph.state import (
     AuditState,
     DegradedNote,
     RunMode,
@@ -29,7 +29,7 @@ from graph.state import (
     TrustDimension,
     dep_key,
 )
-from tools.index.core.models import Dependency
+from safesc.tools.index.core.models import Dependency
 
 
 def _dep(name="pkg", version="1.0.0", ecosystem="npm"):

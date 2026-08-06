@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.deep_analysis_tool import (
+from safesc.tools.deep_analysis_tool import (
     BehaviorEvidence,
     ClonedRepo,
     DeepAnalysisEvidence,
@@ -41,7 +41,7 @@ from tools.deep_analysis_tool import (
     gather_deep_analysis_evidence,
     gather_registry_provenance,
 )
-from tools.index.core.models import Dependency
+from safesc.tools.index.core.models import Dependency
 
 
 # --------------------------------------------------------------------------- #
@@ -66,7 +66,7 @@ def test_evidence_models_have_no_verdict_fields(model):
 
 def test_tool_output_json_contains_no_verdict(monkeypatch):
     # Force the degraded (no-clone) path so we don't hit git/network.
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
     req = DeepAnalysisRequest(name="x", version="1", ecosystem="python")
@@ -258,7 +258,7 @@ def test_safe_extract_archive_blocks_zip_slip(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_gather_degrades_without_source_url(monkeypatch):
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
     monkeypatch.setattr(m, "extract_recent_commits", lambda req, depth=20: [])
@@ -315,7 +315,7 @@ def test_gather_registry_provenance_degrades_on_lookup_error():
 
 
 def test_gather_identity_includes_nearest_popular_and_registry(monkeypatch):
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     # No clone (so no docs); registry lookup injected — never touches the network.
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)
@@ -337,7 +337,7 @@ def test_gather_identity_includes_nearest_popular_and_registry(monkeypatch):
 def test_clone_uses_registry_repo_url_when_source_url_absent(monkeypatch):
     # A registry dep has an artifact_url (.whl) but no source_url. The gatherer must
     # resolve the real repo from registry metadata and clone THAT, not fail.
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     cloned_with = {}
 
@@ -357,7 +357,7 @@ def test_clone_uses_registry_repo_url_when_source_url_absent(monkeypatch):
 
 def test_clone_keeps_existing_source_url(monkeypatch):
     # If the dep already has a VCS source_url, it is used as-is (no registry override).
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     cloned_with = {}
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: cloned_with.setdefault("u", req.source_url) or None)
@@ -374,7 +374,7 @@ def test_clone_keeps_existing_source_url(monkeypatch):
 def test_gather_identity_registry_fetched_without_clone():
     # A squat often has no real repo; registry provenance must still be attempted
     # even when the source clone is unavailable.
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     called = {"n": 0}
 

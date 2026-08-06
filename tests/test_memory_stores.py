@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from memory.long_term import PGVectorConfig, PGVectorStore, _vector_literal
-from memory.short_term import RedisConfig, ShortTermStore
+from safesc.memory.long_term import PGVectorConfig, PGVectorStore, _vector_literal
+from safesc.memory.short_term import RedisConfig, ShortTermStore
 
 
 # ============================================================ short_term (Redis)
@@ -94,7 +94,7 @@ def test_ping_delegates():
 
 
 def test_store_is_accepted_by_session_manager():
-    from graph.harness.session_manager import SessionManager
+    from safesc.graph.harness.session_manager import SessionManager
 
     store = ShortTermStore(FakeRedis())
     sm = SessionManager(store)
@@ -244,7 +244,7 @@ def test_ensure_schema_pins_dim_and_creates_index():
 def test_memory_manager_uses_stores_end_to_end(monkeypatch):
     """The MemoryManager should read from / write to the real store objects via injection,
     confirming the interfaces line up (get/set, query_similar/upsert/get, gc)."""
-    from graph.harness.memory_manager import MemoryManager
+    from safesc.graph.harness.memory_manager import MemoryManager
 
     redis = ShortTermStore(FakeRedis())
     vector = _store(FakeConn(delete_rowcount=3))

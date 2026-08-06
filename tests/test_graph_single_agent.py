@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from graph.single_pkg import (
+from safesc.graph.single_pkg import (
     NODE_RESOLVE_SINGLE,
     SYNTHETIC_LOCKFILE,
     add_single_package_entry,
     parse_package_spec,
     resolve_single_package,
 )
-from graph.spine import NODE_HASH_VERIFY
-from graph.state import AuditState, RunMode
+from safesc.graph.spine import NODE_HASH_VERIFY
+from safesc.graph.state import AuditState, RunMode
 
 
 # --------------------------------------------------------------------------- #

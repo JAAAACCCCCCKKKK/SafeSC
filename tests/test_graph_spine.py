@@ -13,8 +13,8 @@ import tempfile
 
 import pytest
 
-import graph.spine as spine
-from graph.spine import (
+import safesc.graph.spine as spine
+from safesc.graph.spine import (
     NODE_CHEAP_SIGNALS,
     NODE_GATE,
     NODE_HASH_VERIFY,
@@ -38,7 +38,7 @@ from graph.spine import (
     load_default_tools,
     plan_gate,
 )
-from graph.state import (
+from safesc.graph.state import (
     AuditState,
     Severity,
     Signal,
@@ -46,7 +46,7 @@ from graph.state import (
     TrustDimension,
     dep_key,
 )
-from tools.index.core.models import Dependency
+from safesc.tools.index.core.models import Dependency
 
 
 # --------------------------------------------------------------------------- #
@@ -506,13 +506,13 @@ def test_add_spine_wires_fixed_sequence():
     ],
 )
 def test_scan_severity_mapping(scan_value, expected):
-    from tools.scan.signals.models import Severity as ScanSeverity
+    from safesc.tools.scan.signals.models import Severity as ScanSeverity
 
     assert _scan_severity_to_graph(ScanSeverity(scan_value)) is expected
 
 
 def test_scan_signal_to_graph():
-    from tools.scan.signals.models import Dimension, Severity as ScanSeverity, Signal as ScanSignal
+    from safesc.tools.scan.signals.models import Dimension, Severity as ScanSeverity, Signal as ScanSignal
 
     dep = _dep()
     scan_sig = ScanSignal(
@@ -536,7 +536,7 @@ def test_scan_signal_to_graph():
 
 
 def test_hash_result_to_graph_mismatch():
-    from tools.scan.signals.provenance.models import HashVerificationResult, VerificationStatus
+    from safesc.tools.scan.signals.provenance.models import HashVerificationResult, VerificationStatus
 
     dep = _dep()
     r = HashVerificationResult(
@@ -555,7 +555,7 @@ def test_hash_result_to_graph_mismatch():
 
 
 def test_hash_result_to_graph_match_is_clean():
-    from tools.scan.signals.provenance.models import HashVerificationResult, VerificationStatus
+    from safesc.tools.scan.signals.provenance.models import HashVerificationResult, VerificationStatus
 
     dep = _dep()
     r = HashVerificationResult(dep=dep, lockfile_hash="sha256:a", registry_hash="sha256:a", status=VerificationStatus.MATCH)

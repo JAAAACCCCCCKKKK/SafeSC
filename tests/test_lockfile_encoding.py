@@ -11,7 +11,7 @@ import codecs
 
 import pytest
 
-from tools.index.core.text_io import decode_bytes, read_text
+from safesc.tools.index.core.text_io import decode_bytes, read_text
 
 
 _SAMPLE = "requests==2.31.0\nflask==3.0.0\n"
@@ -54,7 +54,7 @@ class TestDecodeBytes:
 
 class TestRequirementsEncoding:
     def _parse(self, path):
-        from tools.index.ecosystems.python.parsers.requirements import parse
+        from safesc.tools.index.ecosystems.python.parsers.requirements import parse
         return parse(path)
 
     @pytest.mark.parametrize(
@@ -81,7 +81,7 @@ class TestTomlEncoding:
         )
         path = tmp_path / "uv.lock"
         path.write_bytes(codecs.BOM_UTF16_LE + toml.encode("utf-16-le"))
-        from tools.index.ecosystems.python.parsers.uv import parse
+        from safesc.tools.index.ecosystems.python.parsers.uv import parse
         deps = parse(path)
         assert [d.name for d in deps] == ["requests"]
 

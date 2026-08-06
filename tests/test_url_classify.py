@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.index.core.url_classify import (
+from safesc.tools.index.core.url_classify import (
     is_artifact_url,
     is_vcs_url,
     module_path_to_repo_url,

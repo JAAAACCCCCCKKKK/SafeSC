@@ -10,7 +10,7 @@ import json
 
 from pathlib import Path
 
-from tools.index.cli import commands, main as index_main
+from safesc.tools.index.cli import commands, main as index_main
 
 
 def test_discover_subcommand_text(tmp_path, capsys):

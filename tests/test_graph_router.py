@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from graph.router import (
+from safesc.graph.router import (
     NODE_FULL_SPINE_ENTRY,
     NODE_SINGLE_PACKAGE_ENTRY,
     AuditRequest,
@@ -17,7 +17,7 @@ from graph.router import (
     route_condition,
     router_node,
 )
-from graph.state import AuditState, RoutePath, RunMode, RunScope
+from safesc.graph.state import AuditState, RoutePath, RunMode, RunScope
 
 
 def _req(target, mode=RunMode.QUERY, override=None):
@@ -141,8 +141,8 @@ def test_route_condition_selects_entry_node_by_path():
 
 def test_entry_nodes_match_real_graph_nodes():
     # route_condition must return the actual spine/entry node names, not placeholders.
-    from graph.single_pkg import NODE_RESOLVE_SINGLE
-    from graph.spine import NODE_INDEX
+    from safesc.graph.single_pkg import NODE_RESOLVE_SINGLE
+    from safesc.graph.spine import NODE_INDEX
 
     assert NODE_SINGLE_PACKAGE_ENTRY == NODE_RESOLVE_SINGLE
     assert NODE_FULL_SPINE_ENTRY == NODE_INDEX

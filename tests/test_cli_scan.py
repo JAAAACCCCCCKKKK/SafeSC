@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from tools.scan.cli import commands, main as scan_main
+from safesc.tools.scan.cli import commands, main as scan_main
 
 
 def test_verify_subcommand(tmp_path, capsys):

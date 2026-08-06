@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from graph.harness import auto_repair as ar
-from graph.harness.constraint_validator import ValidationError
+from safesc.graph.harness import auto_repair as ar
+from safesc.graph.harness.constraint_validator import ValidationError
 
 
 def test_is_transient_by_message():

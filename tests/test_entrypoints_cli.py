@@ -11,8 +11,8 @@ import types
 
 import pytest
 
-from entrypoints import bootstrap, cli
-from graph.state import GateDecision, Severity
+from safesc.entrypoints import bootstrap, cli
+from safesc.graph.state import GateDecision, Severity
 
 
 def _fake_result(*, exit_code=0, passed=True, incomplete=False, summary="ok"):
@@ -63,10 +63,10 @@ def test_missing_credential_returns_2(monkeypatch, capsys):
 
 def test_report_dir_emits_artifacts(monkeypatch, tmp_path, capsys, _llm_env):
     monkeypatch.setattr(cli.graph_build, "run", lambda *a, **k: _fake_result())
-    monkeypatch.setattr("reporter.build_report", lambda state, run_id: object())
+    monkeypatch.setattr("safesc.reporter.build_report", lambda state, run_id: object())
     written = [tmp_path / "safesc-report.json"]
-    monkeypatch.setattr("reporter.write_reports", lambda report, d, formats: written)
-    monkeypatch.setattr("reporter.FORMATS", ["json"])
+    monkeypatch.setattr("safesc.reporter.write_reports", lambda report, d, formats: written)
+    monkeypatch.setattr("safesc.reporter.FORMATS", ["json"])
     rc = cli.main(["audit", ".", "--report-dir", str(tmp_path), "--format", "json"],
                   tools=object(), session=object())
     assert rc == 0

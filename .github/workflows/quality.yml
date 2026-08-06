@@ -38,7 +38,7 @@ jobs:
         run: python -m compileall tools graph entrypoints reporter memory security
 
       - name: Discover lockfiles in repository
-        run: python -m tools.index.core.discovery .
+        run: python -m safesc.tools.index.core.discovery .
 
       - name: Build sdist and wheel
         run: python -m build

@@ -11,8 +11,8 @@ import types
 
 import pytest
 
-from graph.harness import constraint_validator as cv
-from graph.state import LLMOutput, Severity, TrustDimension
+from safesc.graph.harness import constraint_validator as cv
+from safesc.graph.state import LLMOutput, Severity, TrustDimension
 
 
 def _out(**kw):

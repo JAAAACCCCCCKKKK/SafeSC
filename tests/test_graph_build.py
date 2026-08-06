@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from security.credentials import UserCredentials
-from graph import build as gb
-from graph.build import RunConfig, RunResult, _shape_result, retrying_tools
-from graph.router import AuditRequest
-from graph.spine import InjectedTools
-from graph.state import GateDecision, RunMode, Severity
+from safesc.security.credentials import UserCredentials
+from safesc.graph import build as gb
+from safesc.graph.build import RunConfig, RunResult, _shape_result, retrying_tools
+from safesc.graph.router import AuditRequest
+from safesc.graph.spine import InjectedTools
+from safesc.graph.state import GateDecision, RunMode, Severity
 
 
 class _FakeSession:
@@ -39,7 +39,7 @@ def _creds() -> UserCredentials:
 @pytest.fixture(autouse=True)
 def _no_anthropic(monkeypatch):
     """Avoid constructing the real BYOK Claude client (anthropic not installed)."""
-    monkeypatch.setattr("graph.llm_client.build_specialist_deps", lambda creds, **kw: object())
+    monkeypatch.setattr("safesc.graph.llm_client.build_specialist_deps", lambda creds, **kw: object())
 
 
 def _run_with_final(final, *, mode=RunMode.AUDIT, capture=None):

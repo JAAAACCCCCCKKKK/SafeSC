@@ -57,11 +57,11 @@ memory = [
 ]
 
 [project.scripts]
-index = "tools.index.cli.main:main"
-scan = "tools.scan.cli.main:main"
+index = "safesc.tools.index.cli.main:main"
+scan = "safesc.tools.scan.cli.main:main"
 # Tier-2 CI entrypoint: wires the real tools + a store-free local session, then delegates
-# to the injectable entrypoints.cli.main (no Redis/Postgres; BYOK LLM key from env).
-safesc = "entrypoints.bootstrap:main"
+# to the injectable safesc.entrypoints.cli.main (no Redis/Postgres; BYOK LLM key from env).
+safesc = "safesc.entrypoints.bootstrap:main"
 
 [project.urls]
 Homepage = "https://github.com/JAAAACCCCCCKKKK/SafeSC"
@@ -74,7 +74,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 branch = true
-source = ["tools", "graph", "entrypoints", "reporter", "memory", "security"]
+source = ["safesc"]
 
 [tool.coverage.report]
 # Enforce the repository ruleset's 80% minimum test-coverage gate in CI.
@@ -83,10 +83,10 @@ show_missing = true
 skip_empty = true
 
 [tool.hatch.build.targets.wheel]
-# Ship the full runtime, not just the frozen Stage 0–3 tools, so the `safesc`
-# console script and its imports (graph, entrypoints, reporter, memory, security) resolve
-# after a plain `pip install`. Credential handling lives in the `security` package.
-packages = ["tools", "graph", "entrypoints", "reporter", "memory", "security"]
+# Ship the whole runtime under one top-level `safesc` package, so its internal subpackages
+# (safesc.tools / .graph / .entrypoints / .reporter / .memory / .security) never occupy
+# generic global import names once installed.
+packages = ["safesc"]
 # Ship the PEP 561 `py.typed` markers so the `Typing :: Typed` classifier is honest and
 # downstream type-checkers pick up SafeSC's inline annotations.
 artifacts = ["**/py.typed"]

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 
-from graph.harness import memory_manager as mm
-from graph.harness.memory_manager import MemoryConfig, MemoryContext, MemoryManager, artifact_id
-from graph.state import (
+from safesc.graph.harness import memory_manager as mm
+from safesc.graph.harness.memory_manager import MemoryConfig, MemoryContext, MemoryManager, artifact_id
+from safesc.graph.state import (
     AuditState,
     GateDecision,
     Severity,
@@ -19,7 +19,7 @@ from graph.state import (
     SignalOrigin,
     TrustDimension,
 )
-from tools.index.core.models import Dependency
+from safesc.tools.index.core.models import Dependency
 
 
 class FakeRedis:

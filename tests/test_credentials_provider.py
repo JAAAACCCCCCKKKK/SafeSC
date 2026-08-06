@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from security.credentials import (
+from safesc.security.credentials import (
     MissingCredentialError,
     PROVIDER_DEFAULT_MODELS,
     UserCredentials,

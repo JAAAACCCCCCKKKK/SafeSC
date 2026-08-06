@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from graph.state import (
+from safesc.graph.state import (
     AuditState,
     DegradedNote,
     GateDecision,
@@ -34,7 +34,7 @@ from graph.state import (
     sum_deltas,
     write_once,
 )
-from tools.index.core.models import Dependency
+from safesc.tools.index.core.models import Dependency
 
 
 # --------------------------------------------------------------------------- #

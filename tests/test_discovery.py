@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.index import discover
+from safesc.tools.index import discover
 
 
 def make_tree(root: Path, files: list[str]) -> None:

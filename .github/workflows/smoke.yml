@@ -51,7 +51,7 @@ jobs:
           PY
 
       - name: Discovery smoke test
-        run: python -m tools.index.core.discovery smoke-fixture
+        run: python -m safesc.tools.index.core.discovery smoke-fixture
 
       - name: Index JSON output smoke test
         run: index --json smoke-fixture
@@ -60,8 +60,8 @@ jobs:
         run: scan signals smoke-fixture
 
   # Exercises the real agent path end-to-end: the tools adaptation layer
-  # (graph.spine.load_default_tools), the store-free bootstrap wiring, and — crucially —
-  # the real LangGraph compilation in graph.build.build_graph, none of which the unit
+  # (safesc.graph.spine.load_default_tools), the store-free bootstrap wiring, and — crucially —
+  # the real LangGraph compilation in safesc.graph.build.build_graph, none of which the unit
   # tests cover (they inject a fake graph_factory). Runs fully offline against a clean
   # fixture (0 real deps → no gray-zone fan-out → no LLM/network call), so a dummy BYOK
   # key is enough and the gate must PASS (exit 0).

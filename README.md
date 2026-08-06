@@ -100,7 +100,7 @@ environment variables (CLI/CI), or API headers.
 Need another provider? Register one at runtime without editing SafeSC:
 
 ```python
-from graph.llm_client import register_llm_provider
+from safesc.graph.llm_client import register_llm_provider
 register_llm_provider("my-provider", my_factory)   # my_factory(LLMCredentials) -> LLMClient
 ```
 

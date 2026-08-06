@@ -40,10 +40,10 @@ body:
       label: Area
       description: Which part of the system would this touch?
       options:
-        - "New ecosystem adapter (tools/index/ecosystems)"
-        - "New / improved trust signal (tools/scan/signals)"
-        - "LLM specialist / Stage 4 analysis (graph/specialists)"
-        - "Scoring / gate policy (graph/report_agent)"
+        - "New ecosystem adapter (safesc/tools/index/ecosystems)"
+        - "New / improved trust signal (safesc/tools/scan/signals)"
+        - "LLM specialist / Stage 4 analysis (safesc/graph/specialists)"
+        - "Scoring / gate policy (safesc/graph/report_agent)"
         - "Reporter output (SARIF / Markdown / JSON)"
         - "CLI / entrypoints / GitHub Action"
         - "Memory / stores (Redis / PGVector)"

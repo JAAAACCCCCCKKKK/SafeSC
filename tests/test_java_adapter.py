@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.index import discover
-from tools.index.ecosystems.java.adapter import JavaAdapter
+from safesc.tools.index import discover
+from safesc.tools.index.ecosystems.java.adapter import JavaAdapter
 
 
 # ── Adapter unit tests ─────────────────────────────────────────────────────────

@@ -269,7 +269,7 @@ Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is 
 
 ## 6. Project Structure (Enforced)
 
-The v1 Stages 0–3 already live under `tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is a new top-level `graph/`. Legend: ✅ built · ◑ partial (seam built, backing store pending) · ⛔ pending.
+The v1 Stages 0–3 already live under `safesc/tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is `safesc/graph/`. Everything ships under one top-level `safesc/` package so the internal subpackages never occupy generic global import names once installed. Legend: ✅ built · ◑ partial (seam built, backing store pending) · ⛔ pending.
 
 ```
 safesc/
@@ -309,11 +309,11 @@ safesc/
 Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
 
 ### 6.1 Structural Invariants
-1. **Only `graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
-2. **`tools/` stays LLM-free — including `tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `graph/specialists/`, never in `tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
-3. **Adding an ecosystem still means one adapter under `tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
-4. **The graph is the core; `entrypoints/` are thin.** The CLI calls `graph.build.run(request)`; it contains no audit logic. (Any external HTTP API is a separate private repo that also calls the same `run()` seam — it is not part of this repo.)
-5. **v1 layering preserved:** `tools/scan/signals/` and `graph/specialists/` receive standardized `Dependency` objects and never import `tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
+1. **Only `safesc/graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
+2. **`safesc/tools/` stays LLM-free — including `safesc/tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `safesc/graph/specialists/`, never in `safesc/tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
+3. **Adding an ecosystem still means one adapter under `safesc/tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
+4. **The graph is the core; `safesc/entrypoints/` are thin.** The CLI calls `safesc.graph.build.run(request)`; it contains no audit logic. (Any external HTTP API is a separate private repo that also calls the same `run()` seam — it is not part of this repo.)
+5. **v1 layering preserved:** `safesc/tools/scan/signals/` and `safesc/graph/specialists/` receive standardized `Dependency` objects and never import `safesc/tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 6. **Redis and PGVector have exactly one reader/writer: the Memory Manager (§2.7.4).** No node imports a store or embedding client directly; specialists see memory only as an injected read-only `MemoryContext`, and long-term persistence happens at exactly one point (tail of `report_agent`). This is the structural form of the §3.3 escalate-only-memory rule.
 7. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).
 

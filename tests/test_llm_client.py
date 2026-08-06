@@ -12,9 +12,9 @@ import types
 
 import pytest
 
-from security.credentials import LLMCredentials, UserCredentials
-from graph import llm_client as lc
-from graph.state import LLMOutput
+from safesc.security.credentials import LLMCredentials, UserCredentials
+from safesc.graph import llm_client as lc
+from safesc.graph.state import LLMOutput
 
 _JSON = '{"task":"behavior","verdict":"suspicious","confidence":0.8,"evidence":[],"reasoning":"r"}'
 

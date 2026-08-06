@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import graph.specialists as specialists_pkg
-from graph.specialists import behavior_agent, identity_agent, provenance_agent
-from graph.specialists.base import (
+import safesc.graph.specialists as specialists_pkg
+from safesc.graph.specialists import behavior_agent, identity_agent, provenance_agent
+from safesc.graph.specialists.base import (
     COMMON_SYSTEM_RULES,
     SpecialistDeps,
     _build_user_prompt,
@@ -25,9 +25,9 @@ from graph.specialists.base import (
     _fmt_items,
     run_specialist,
 )
-from graph.spine import NODE_REPORT, SPECIALIST_NODE, SpecialistTask
-from graph.state import LLMOutput, Severity, TrustDimension, dep_key
-from tools.index.core.models import Dependency
+from safesc.graph.spine import NODE_REPORT, SPECIALIST_NODE, SpecialistTask
+from safesc.graph.state import LLMOutput, Severity, TrustDimension, dep_key
+from safesc.tools.index.core.models import Dependency
 
 
 # --------------------------------------------------------------------------- #
@@ -198,7 +198,7 @@ def test_default_gatherer_runs_offline_and_still_produces_a_signal(monkeypatch):
     # index adapters emit exactly python/javascript/rust/go/java).
     # Stub the registry lookup and clone so the test stays truly offline (the gatherer
     # would otherwise resolve a repo via a real PyPI call for the fake package).
-    from tools import deep_analysis_tool as m
+    from safesc.tools import deep_analysis_tool as m
 
     monkeypatch.setattr(m, "_default_registry_lookup", lambda *a, **k: None)
     monkeypatch.setattr(m, "safe_clone", lambda req, depth=1: None)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from graph.state import (
+from safesc.graph.state import (
     AuditState,
     DegradedNote,
     GateDecision,
@@ -23,7 +23,7 @@ from graph.state import (
     TrustDimension,
     dep_key,
 )
-from reporter import (
+from safesc.reporter import (
     FORMATS,
     build_report,
     build_sarif,
@@ -33,8 +33,8 @@ from reporter import (
     render_sarif,
     write_reports,
 )
-from reporter.models import AuditReport
-from tools.index.core.models import Dependency
+from safesc.reporter.models import AuditReport
+from safesc.tools.index.core.models import Dependency
 
 
 def _dep(name="pkg", version="1.0.0", ecosystem="npm"):
