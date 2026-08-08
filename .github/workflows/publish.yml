@@ -1,0 +1,66 @@
+name: Publish to PyPI
+
+# Trusted Publishing (OIDC) to PyPI. No API token is stored: PyPI verifies this
+# repository + workflow filename (`publish.yml`) and mints a short-lived token at
+# publish time. Configure the pending/active publisher on PyPI with:
+#   owner=JAAAACCCCCCKKKK  repo=SafeSC  workflow=publish.yml  environment=pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/safesc/
+    permissions:
+      # Mandatory for Trusted Publishing (OIDC): lets the action request the
+      # short-lived identity token PyPI exchanges for an upload token.
+      id-token: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
