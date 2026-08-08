@@ -1612,11 +1612,6 @@ agent = [
 anthropic = [
     { name = "anthropic" },
 ]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-]
 memory = [
     { name = "langgraph-checkpoint-redis" },
     { name = "psycopg", extra = ["binary"] },
@@ -1627,6 +1622,13 @@ openai = [
     { name = "openai" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
@@ -1635,16 +1637,20 @@ requires-dist = [
     { name = "langgraph-checkpoint-redis", marker = "extra == 'memory'", specifier = ">=0.5,<0.6" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0" },
     { name = "packaging", specifier = ">=21" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'memory'", specifier = ">=3,<4" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'memory'", specifier = ">=3.3,<4" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "redis", marker = "extra == 'memory'", specifier = ">=5,<8" },
-    { name = "voyageai", marker = "extra == 'memory'", specifier = ">=0.3,<1" },
+    { name = "redis", marker = "extra == 'memory'", specifier = ">=7.4,<8" },
+    { name = "voyageai", marker = "extra == 'memory'", specifier = ">=0.5,<0.6" },
 ]
-provides-extras = ["dev", "agent", "anthropic", "openai", "memory"]
+provides-extras = ["agent", "anthropic", "openai", "memory"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-cov", specifier = ">=5" },
+]
 
 [[package]]
 name = "sniffio"

@@ -9,7 +9,7 @@ description = "Supply-chain trust auditing for CI — deterministic signals with
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "JAAAACCCCCCKKKK", email = "15233552004@163.com" }]
+authors = [{ name = "JAAAACCCCCCKKKK", email = "uk7501459988@gmail.com" }]
 keywords = ["supply-chain", "security", "sca", "dependency", "audit", "ci", "sbom", "llm"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -33,7 +33,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
 # Tier-2 CI gate orchestration: deterministic spine + Stage-4 LLM specialists. No
 # Redis/Postgres. This does NOT pull an LLM provider SDK — there is no default provider
 # (BYOK, §3.5), so you MUST also install the extra for your chosen SAFESC_LLM_PROVIDER,
@@ -50,11 +49,17 @@ anthropic = ["anthropic>=0.39"]
 openai = ["openai>=1.0"]
 # §3 memory stores — lazily imported, so the core stays installable without these.
 memory = [
-    "redis>=5,<8",                       # short-term store + distributed semaphores (§3.1)
-    "psycopg[binary]>=3,<4",             # PGVector long-term store connection (§3.2)
-    "voyageai>=0.3,<1",                  # default BYOK embedding provider (§3.2, §3.5)
+    "redis>=7.4,<8",                     # short-term store + distributed semaphores (§3.1)
+    "psycopg[binary]>=3.3,<4",           # PGVector long-term store connection (§3.2)
+    "voyageai>=0.5,<0.6",                # default BYOK embedding provider (§3.2, §3.5)
     "langgraph-checkpoint-redis>=0.5,<0.6", # LangGraph Redis checkpointer (§3.1)
 ]
+
+# Development-only tooling (PEP 735). Not a published extra — it never appears in the
+# wheel's `Provides-Extra` metadata, so users can't `pip install safesc[dev]`. Installed
+# for contributors via `uv sync --group dev` (or `pip install --group dev` on pip >=25.1).
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
 
 [project.scripts]
 index = "safesc.tools.index.cli.main:main"
