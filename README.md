@@ -17,6 +17,22 @@ only *raise* severity, never lower it.
 
 ---
 
+## Install
+
+```bash
+pip install "safesc[agent,anthropic]"    # or [agent,openai]
+```
+
+> **`pip install safesc` alone is not enough for the CI gate.** The bare package ships the
+> deterministic Stage 0–3 tools (`index`, `scan`) only. The `agent` extra adds the
+> orchestration layer, and you must also pick a provider extra — SafeSC bundles no LLM SDK
+> because there is no default provider (BYOK). See [Optional extras](#optional-extras).
+
+Using the GitHub Action instead? It handles installation for you — skip to
+[Quick start](#quick-start--github-action).
+
+---
+
 ## Quick start — GitHub Action
 
 Add the following workflow to a **consumer** repository (e.g. `.github/workflows/safesc.yml`)
@@ -108,10 +124,8 @@ register_llm_provider("my-provider", my_factory)   # my_factory(LLMCredentials) 
 
 ## CLI usage
 
-Install the CI tier (deterministic spine + LLM specialists, no Redis/Postgres required):
-
-Install the orchestration extra **plus the SDK for your chosen provider** (there is no
-default provider, so no provider SDK is bundled):
+Install the CI tier — the orchestration extra **plus the SDK for your chosen provider**
+(no Redis/Postgres required):
 
 ```bash
 pip install "safesc[agent,anthropic]"   # Anthropic provider
@@ -177,6 +191,10 @@ Every run can emit **SARIF** (for GitHub code scanning), **Markdown** (human-rea
 | `anthropic` | Anthropic SDK | Anthropic (Claude) provider. |
 | `openai` | OpenAI SDK | OpenAI and OpenAI-compatible providers. |
 | `memory` | Redis + Postgres/PGVector | Optional long-term memory (retrieval grounding only; never changes a verdict). |
+
+Without any extra, `pip install safesc` gives you the frozen Stage 0–3 tools (`index`,
+`scan`) — deterministic discovery, parsing, hash verification, and cheap signals — but not
+the `safesc audit` CI gate, which requires `agent` plus a provider extra.
 
 ## Security
 

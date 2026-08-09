@@ -90,6 +90,41 @@ def _logged_llm_call(provider: str, model: str, base_url: Optional[str]):
 LLMClientFactory = Callable[[LLMCredentials], LLMClient]
 _PROVIDERS: dict[str, LLMClientFactory] = {}
 
+# Built-in provider -> the optional extra that ships its SDK. Used only to render an
+# actionable install hint; custom providers registered via `register_llm_provider()` fall
+# back to their own name.
+_PROVIDER_EXTRAS = {"anthropic": "anthropic", "openai": "openai"}
+
+
+class MissingProviderSDKError(RuntimeError):
+    """The configured provider's SDK is not installed.
+
+    Raised by `make_llm` (i.e. inside `build_specialist_deps`, before the graph starts),
+    NOT lazily inside a specialist node. That timing is the point: a specialist raising
+    ModuleNotFoundError mid-run would be caught by `auto_repaired_node`, classified
+    non-transient, and turned into a degraded note — so the audit would finish, pass the
+    gate, and exit 0 having never made a single LLM call. Silently downgrading to a
+    deterministic-only scan while the user believes Stage 4 ran is the worst failure mode
+    a security tool can have. Failing before the run starts makes it impossible.
+    """
+
+
+def _require_sdk(module: str, provider: str) -> None:
+    """Fail fast with an install hint if the provider SDK is absent.
+
+    Uses `importlib.util.find_spec` rather than a try/import so that an ImportError raised
+    *inside* an installed-but-broken SDK is not mistaken for "not installed".
+    """
+    import importlib.util
+
+    if importlib.util.find_spec(module) is None:
+        extra = _PROVIDER_EXTRAS.get(provider, provider)
+        raise MissingProviderSDKError(
+            f"provider '{provider}' needs the '{module}' package, which is part of the "
+            f"optional '{extra}' extra.\n"
+            f"Install it with:  pip install 'safesc[agent,{extra}]'"
+        )
+
 
 def register_llm_provider(name: str, factory: LLMClientFactory) -> None:
     """Register (or override) a reasoning-LLM provider. Lets a deployment add a bespoke
@@ -110,7 +145,7 @@ def make_llm(creds: LLMCredentials) -> LLMClient:
         raise ValueError(
             f"unsupported LLM provider '{creds.provider}'. "
             f"Supported: {supported_providers()}. "
-            "Register a custom one with graph.llm_client.register_llm_provider()."
+            "Register a custom one with safesc.graph.llm_client.register_llm_provider()."
         )
     return factory(creds)
 
@@ -131,7 +166,10 @@ def parse_llm_output(text: str) -> LLMOutput:
 
 def make_claude_llm(creds: LLMCredentials) -> LLMClient:
     """Build an `LLMClient` bound to the user's key. The Anthropic SDK is imported
-    lazily so this module (and the specialists) stay importable without it."""
+    lazily so this module (and the specialists) stay importable without it; the
+    availability check runs first so a missing SDK surfaces here, before the graph
+    starts, instead of degrading a specialist mid-run (see MissingProviderSDKError)."""
+    _require_sdk("anthropic", "anthropic")
     from anthropic import Anthropic  # lazy: only needed at real call time
 
     client = Anthropic(
@@ -161,7 +199,9 @@ def make_claude_llm(creds: LLMCredentials) -> LLMClient:
 def make_openai_llm(creds: LLMCredentials) -> LLMClient:
     """Build an `LLMClient` for OpenAI and any OpenAI-compatible endpoint (routed via
     `creds.base_url`). The SDK is imported lazily so this module stays importable without
-    it; install the optional `openai` extra to use this provider."""
+    it; the availability check runs first so a missing SDK fails before the run rather
+    than degrading a specialist mid-run (see MissingProviderSDKError)."""
+    _require_sdk("openai", "openai")
     from openai import OpenAI  # lazy: only needed at real call time
 
     client = OpenAI(
@@ -204,9 +244,11 @@ def build_specialist_deps(
     gather_evidence=None,
     validator=None,
 ) -> SpecialistDeps:
-    """Assemble `SpecialistDeps` with a BYOK Claude client wired in — the single place
-    the LLM key crosses into the graph, via injection, never `AuditState`. Call once
-    per run at the entrypoint, then pass the deps when building specialist nodes."""
+    """Assemble `SpecialistDeps` with a BYOK LLM client for the caller's configured
+    provider — the single place the LLM key crosses into the graph, via injection, never
+    `AuditState`. Call once per run at the entrypoint, then pass the deps when building
+    specialist nodes. Raises `MissingProviderSDKError` here (before the graph runs) if the
+    configured provider's SDK is not installed."""
     return SpecialistDeps(
         llm=make_llm(creds.llm),
         gather_evidence=gather_evidence,

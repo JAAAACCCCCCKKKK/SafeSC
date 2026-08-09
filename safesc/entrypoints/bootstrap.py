@@ -108,6 +108,19 @@ def main(argv=None) -> int:
     """
     _make_console_utf8_safe()
     _configure_logging()
+
+    # Imported here rather than at module scope: `llm_client` pulls in the specialist
+    # surface, which may transitively require the `agent` extra. Guarding it keeps the
+    # friendly install hint working when that extra is absent.
+    try:
+        from safesc.graph.llm_client import MissingProviderSDKError
+    except ModuleNotFoundError as exc:
+        top = exc.name.split(".")[0] if exc.name else ""
+        if top in _OPTIONAL_MODULE_EXTRAS:
+            _explain_missing_extra(top)
+            return 2
+        raise
+
     try:
         tools, session, memory = build_local_runtime()
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
@@ -118,6 +131,11 @@ def main(argv=None) -> int:
 
     try:
         return cli_main(argv, tools=tools, session=session, memory=memory)
+    except MissingProviderSDKError as exc:
+        # Raised by make_llm before the graph starts, so it reaches us instead of being
+        # swallowed as a degraded specialist node (see llm_client.MissingProviderSDKError).
+        print(f"safesc: {exc}", file=sys.stderr)
+        return 2
     except ModuleNotFoundError as exc:
         top = exc.name.split(".")[0] if exc.name else ""
         if top in _OPTIONAL_MODULE_EXTRAS:
