@@ -82,6 +82,9 @@ asyncio_mode = "auto"
 branch = true
 source = ["safesc"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/tests", "/.github", "/docs"]
+
 [tool.coverage.report]
 # Enforce the repository ruleset's 80% minimum test-coverage gate in CI.
 fail_under = 80
