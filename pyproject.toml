@@ -82,14 +82,23 @@ asyncio_mode = "auto"
 branch = true
 source = ["safesc"]
 
-[tool.hatch.build.targets.sdist]
-exclude = ["/tests", "/.github", "/docs"]
-
 [tool.coverage.report]
 # Enforce the repository ruleset's 80% minimum test-coverage gate in CI.
 fail_under = 80
 show_missing = true
 skip_empty = true
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/tests",
+    "/.github",
+    "/docs",
+    "/dist",
+    "/.claude",            # local editor/agent settings — contains absolute local paths
+    "/.safescignore",      # this repo's own self-audit config, not runtime config
+    "/.gitguardian.yml",   # CI-only secret-scanning config
+    "/RELEASE_NOTES_*.md", # per-release artifact for the GitHub Release, not the package
+]
 
 [tool.hatch.build.targets.wheel]
 # Ship the whole runtime under one top-level `safesc` package, so its internal subpackages
