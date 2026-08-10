@@ -143,6 +143,25 @@ def test_index_node_does_not_flag_empty_manifest_only_file():
     assert out == {"dependencies": []}
 
 
+def test_index_node_does_not_flag_cargo_toml_alongside_cargo_lock():
+    # Regression: a normal Rust project has BOTH Cargo.toml and Cargo.lock. Cargo.toml
+    # matches RustAdapter.lockfile_globs (so it's discovered) but always parses to []
+    # by design (it's a manifest, not a lockfile) — same shape as pyproject.toml. Before
+    # cargo.toml was added to _MANIFEST_ONLY_LOCKFILES, this tripped a spurious "0
+    # dependencies" degraded note on every Rust audit.
+    dep = Dependency(name="serde", version="1.0.0", ecosystem="rust", lockfile_path=Path("Cargo.lock"))
+    tools = _tools(
+        discover=lambda target: [
+            LockfileRef(path="Cargo.lock", ecosystem="rust"),
+            LockfileRef(path="Cargo.toml", ecosystem="rust"),
+        ],
+        parse=lambda lockfiles: [dep],
+    )
+    out = index_node(AuditState(target="."), tools)
+    assert out == {"dependencies": [dep]}
+    assert "degraded_notes" not in out
+
+
 def test_index_node_flags_only_the_empty_lockfile_when_mixed():
     dep = _dep()  # lockfile_path == Path("r.txt")
     tools = _tools(

@@ -51,6 +51,12 @@ class PackageMetadata:
     version_present: bool = True   # is dep.version in published_versions?
     version_yanked: bool = False   # is dep.version yanked/withdrawn?
     has_install_script: bool = False  # resolved version declares install hooks
+    has_native_build_script: bool = False  # rust: resolved version declares a `links`
+    # key. Cargo requires a build script whenever `links` is set (a crate cannot claim
+    # to provide a native library link-name without one), so a non-null `lib_links` on
+    # the crates.io version record is a sound (zero false-positive), if incomplete,
+    # proxy: crates whose build.rs exists purely for codegen and never set `links` are
+    # not caught by this field. See behavior/install_script.py.
 
     # --- Identity / provenance descriptors (used by the IdentityAgent to tell a
     #     legitimate companion package from a typosquat; §2.3). All best-effort. ---
@@ -338,6 +344,7 @@ async def _crates_package_metadata(
     published: set[str] = set()
     yanked: set[str] = set()
     created_stamps: list[str] = []
+    version_doc: dict = {}
     for v in versions:
         num = v.get("num")
         if not num:
@@ -348,6 +355,8 @@ async def _crates_package_metadata(
         ts = v.get("created_at")
         if isinstance(ts, str):
             created_stamps.append(ts)
+        if num == dep.version:
+            version_doc = v
 
     crate: dict = data.get("crate") or {}
     created_stamps.sort()
@@ -360,6 +369,9 @@ async def _crates_package_metadata(
         yanked_versions=frozenset(yanked),
         version_present=dep.version in published_fs if published_fs else True,
         version_yanked=dep.version in yanked,
+        # `lib_links` on the crates.io version record mirrors the crate's Cargo.toml
+        # `links` key, which Cargo requires a build script to set (behavior/install_script.py).
+        has_native_build_script=bool(version_doc.get("lib_links")),
         repo_url=_normalise_repo_url(crate.get("repository")) or (crate.get("repository") or None),
         homepage=(crate.get("homepage") or None),
         summary=(crate.get("description") or None),

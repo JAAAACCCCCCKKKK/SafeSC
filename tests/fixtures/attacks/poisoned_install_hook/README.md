@@ -13,15 +13,14 @@ an entirely inert payload. No working exploit code, no vendored malware.
 | `package.json` | Stands in for `fast-json-utilities`'s own manifest: declares `"scripts": {"postinstall": "node ./scripts/setup.js"}`. |
 | `scripts/setup.js` | The postinstall payload: references `https` (network), `process.env` (env), and `eval()` on a base64-decoded string (dynamic exec on encoded data). All inert — decodes to a harmless `console.log`. |
 
-## Why the Stage-3 "behavior" signal is simulated, not collected live
+## How the Stage-3 "behavior" signal is produced
 
-SafeSC's real Stage-3 collector for this
-(`safesc/tools/scan/signals/behavior/install_script.py::InstallScriptCollector`) decides
-via a **live npm registry lookup** (`hasInstallScript`), not by reading
-`package.json`/`scripts/setup.js` from disk. Since these tests must run fully offline
-with no network access, `tests/test_attack_fixtures.py` constructs the
-`tools.scan.signals.models.Signal` the real collector would emit for a package the
-registry reports as having an install script, and pushes it through the real
-`_scan_signal_to_graph` adapter — exercising the adapter faithfully while documenting
-that the live registry call itself is stood in for. See that test module's docstring
-for the full rationale.
+`tests/test_attack_fixtures.py` runs the **real** Stage-3 collector
+(`safesc/tools/scan/signals/behavior/install_script.py::InstallScriptCollector`) against
+this fixture's dependency, with only its one underlying network call
+(`get_package_metadata`, a live npm registry lookup for `hasInstallScript` in
+production) mocked to return a canned response — the same mocking pattern the
+collector's own unit tests use (`test_stage3_signals.py::TestInstallScriptCollector`).
+Everything else — dimension, severity (`HIGH`), code, message, and evidence — is real,
+unmodified production logic; only the HTTP round-trip is stood in for, since these tests
+must run fully offline with no network access.

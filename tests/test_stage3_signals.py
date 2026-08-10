@@ -667,6 +667,35 @@ class TestInstallScriptCollector:
             sigs = await self.c.collect(_dep(ecosystem="javascript"), MagicMock())
         assert sigs == []
 
+    async def test_rust_native_build_script_flags_high(self):
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        meta = PackageMetadata(has_native_build_script=True)
+        with self._patch_meta(meta):
+            sigs = await self.c.collect(_dep(ecosystem="rust"), MagicMock())
+        assert len(sigs) == 1
+        assert sigs[0].code == "behavior.install_script"
+        assert sigs[0].severity == Severity.HIGH
+        assert sigs[0].evidence == ["lib_links!=null"]
+
+    async def test_rust_no_native_build_script_no_signal(self):
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        with self._patch_meta(PackageMetadata(has_native_build_script=False)):
+            sigs = await self.c.collect(_dep(ecosystem="rust"), MagicMock())
+        assert sigs == []
+
+    async def test_rust_ignores_npm_field_and_vice_versa(self):
+        # A crate flagged only via has_install_script (the npm-shaped field) must not
+        # false-positive on rust, and an npm package flagged only via
+        # has_native_build_script (the rust-shaped field) must not false-positive on npm.
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        with self._patch_meta(PackageMetadata(has_install_script=True, has_native_build_script=False)):
+            assert await self.c.collect(_dep(ecosystem="rust"), MagicMock()) == []
+        with self._patch_meta(PackageMetadata(has_install_script=False, has_native_build_script=True)):
+            assert await self.c.collect(_dep(ecosystem="javascript"), MagicMock()) == []
+
 
 # ---------------------------------------------------------------------------
 # VersionPublishedCollector (Provenance, metadata)
@@ -954,6 +983,36 @@ class TestPackageMetadata:
         meta = await _crates_package_metadata(_dep(version="1.0.1", ecosystem="rust"), session)
         assert meta.version_yanked is True
         assert meta.version_present is True
+
+    async def test_crates_lib_links_detected_for_resolved_version(self):
+        # Mirrors the real openssl-sys/libz-sys shape: lib_links set on the version that
+        # declares a native link name, null on a pure-Rust version.
+        from safesc.tools.scan.signals.registry_meta import _crates_package_metadata
+
+        data = {
+            "versions": [
+                {"num": "0.9.108", "lib_links": None},
+                {"num": "0.9.109", "lib_links": "openssl"},
+            ]
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _crates_package_metadata(_dep(version="0.9.109", ecosystem="rust"), session)
+        assert meta.has_native_build_script is True
+
+        meta = await _crates_package_metadata(_dep(version="0.9.108", ecosystem="rust"), session)
+        assert meta.has_native_build_script is False
+
+    async def test_crates_lib_links_absent_field_defaults_false(self):
+        from safesc.tools.scan.signals.registry_meta import _crates_package_metadata
+
+        data = {"versions": [{"num": "1.0.0"}]}  # no lib_links key at all
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _crates_package_metadata(_dep(version="1.0.0", ecosystem="rust"), session)
+        assert meta.has_native_build_script is False
 
     async def test_get_package_metadata_unsupported_none(self):
         session = MagicMock()

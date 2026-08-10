@@ -199,11 +199,17 @@ def load_default_tools(*, exclude: Sequence[str] = ()) -> InjectedTools:
 
 
 # Lockfiles that legitimately declare zero *pinned* dependencies. These are manifests, not
-# resolved lockfiles, so the python adapter returns [] for them by design — an empty parse
-# is expected and must NOT raise a warning. Any *other* discovered file that yields zero
-# deps is treated as a coverage gap (most often a mis-encoded file, e.g. a UTF-16
+# resolved lockfiles, so their adapter returns [] for them by design — an empty parse is
+# expected and must NOT raise a warning. Any *other* discovered file that yields zero deps
+# is treated as a coverage gap (most often a mis-encoded file, e.g. a UTF-16
 # requirements.txt) so it cannot pass as a silent clean audit (§8 graceful degradation).
-_MANIFEST_ONLY_LOCKFILES: frozenset[str] = frozenset({"pyproject.toml", "setup.cfg"})
+# cargo.toml: RustAdapter.lockfile_globs matches it (so discovery finds it alongside a
+# real Cargo.lock, the common case for any real Rust project), but RustAdapter.parse_
+# lockfile always returns [] for it by design ("Cargo.toml is a declaration file, not a
+# lockfile") — the same manifest-only shape as pyproject.toml/setup.cfg. Without this
+# entry, every normal Rust audit would trip a spurious "0 dependencies" degraded note on
+# Cargo.toml alone. Found and fixed alongside the v2.7 attack-pattern fixtures (§9).
+_MANIFEST_ONLY_LOCKFILES: frozenset[str] = frozenset({"pyproject.toml", "setup.cfg", "cargo.toml"})
 
 
 def _empty_lockfile_notes(lockfiles: list[LockfileRef], deps: list[Dependency]) -> list[DegradedNote]:

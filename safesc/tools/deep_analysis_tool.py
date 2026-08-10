@@ -311,8 +311,13 @@ def extract_install_scripts(repo: ClonedRepo, ecosystem: Ecosystem) -> list[Evid
     """Surface the *content* of install-time execution points, per ecosystem.
 
     We only READ these files; we never execute them. Presence/absence is already a
-    Stage-3 static signal — here we hand the actual code to the LLM for intent
-    analysis, plus deterministic hints (network/file/env access) as metadata."""
+    Stage-3 static signal for javascript (`hasInstallScript`) and, narrowly, rust (a
+    crate's `lib_links` implies a build script — see
+    `tools/scan/signals/behavior/install_script.py`; a build.rs used purely for codegen,
+    with no `links` key, isn't caught there and is only ever seen here). Python has no
+    comparable cheap registry signal yet, so its `setup.py` is only ever examined here.
+    Here we hand the actual code to the LLM for intent analysis, plus deterministic
+    hints (network/file/env access) as metadata."""
     items: list[EvidenceItem] = []
     root = repo.root
 

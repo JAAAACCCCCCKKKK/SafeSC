@@ -31,43 +31,38 @@ lookup for every dependency, which is out of scope for an offline suite and orth
 the identity/behavior dimensions these fixtures target. It is injected as a no-op
 (`verify_hash=lambda dep: []`), exactly like the existing spine tests' fake tools.
 
-Stage 3 (cheap signals) is real, offline, and unmodified for the ONE fixture where that
-is possible: `name_confusion` triggers the real `TyposquatCollector`
-(`tools/scan/signals/identity/typosquat.py`), which is pure local Levenshtein comparison
-with no network dependency — the exact `reqeusts`-vs-`requests` example already used in
-that collector's own docstring and in `test_stage3_signals.py`.
+Stage 3 (cheap signals) is real, offline, and unmodified across ALL FOUR fixtures — this
+was not always true (see CLAUDE.md §9 v2.9) and is worth spelling out precisely:
 
-For the two behavior fixtures (`obfuscated_build`, `poisoned_install_hook`), Stage 3 is a
-**documented stand-in**, not a live collection. Two real, independently-verified facts
-about the production code make live collection impossible here:
+  * `name_confusion` triggers the real `TyposquatCollector`
+    (`tools/scan/signals/identity/typosquat.py`), which is pure local Levenshtein
+    comparison with no network dependency at all — the exact `reqeusts`-vs-`requests`
+    example already used in that collector's own docstring and in `test_stage3_signals.py`.
+  * `obfuscated_build` and `poisoned_install_hook` trigger the real
+    `InstallScriptCollector` (`tools/scan/signals/behavior/install_script.py`), which
+    *does* decide via a live registry lookup (npm `hasInstallScript` / crates.io
+    `lib_links`, per ecosystem) — so its one network call, `get_package_metadata`, is
+    mocked to return a canned `PackageMetadata`, exactly mirroring the established
+    pattern in `test_stage3_signals.py::TestInstallScriptCollector._patch_meta`. Every
+    other line of the collector — ecosystem dispatch, dimension, code, severity,
+    message/evidence branching — is real, unmodified production code; only the HTTP
+    round-trip is stood in for.
 
-  1. `InstallScriptCollector` (the only Stage-3 behavior collector that exists) supports
-     only the `javascript` ecosystem, and even there it decides via a **live npm registry
-     lookup** (`hasInstallScript`) rather than reading `package.json` from disk. Its own
-     docstring says: "Other ecosystems (Python setup.py, Rust build.rs) require
-     inspecting the artifact contents and are handled by a later, download-based stage;
-     this collector emits nothing for them."
-  2. There is today no static/offline Rust build-script collector at all. `build.rs`
-     content is only ever examined by Stage-4's `extract_install_scripts`
-     (`deep_analysis_tool.py`), which requires cloning the dependency's real source repo
-     — a live network operation this offline suite must not perform.
+`InstallScriptCollector`'s Rust coverage is itself real, not a fixture-only shim: crates.io
+exposes a `lib_links` field on each published version, which mirrors the crate's
+Cargo.toml `links` key — and Cargo *requires* a build script whenever `links` is set. That
+makes "non-null `lib_links`" a sound, zero-false-positive (if incomplete — a build.rs used
+purely for codegen, with no `links` key, isn't caught) proxy for "this crate has a build
+script," verified live against crates.io (`openssl-sys`/`libz-sys` -> flagged,
+`serde`/`log` -> not) while building this. See `install_script.py`'s module docstring.
 
-So for those two fixtures we construct the real `tools.scan.signals.models.Signal` a
-collector *would* emit and push it through the real `_scan_signal_to_graph` adapter
-(`graph/spine.py`) — this exercises the v1-Signal -> graph-Signal adapter mapping (one of
-the explicit things this task is meant to validate) faithfully, while being honest that
-the network-bound / not-yet-implemented collection step itself is stood in for. This is
-recorded as a genuine, undecided coverage gap in CLAUDE.md §9, not silently patched over.
-
-The simulated severity for both is `Severity.MEDIUM` ("unconfirmed static indicator,
-pending LLM verification") — the same gray-zone design `typosquat.py` already documents
-for the identity dimension — rather than the real `InstallScriptCollector`'s blunter
-`Severity.HIGH`. This is a deliberate fixture-modeling choice, not a claim about
-production severities: it is what makes the "manually raise `GateConfig.gray_floor` to
-HIGH and confirm the three attack tests fail" acceptance check (CLAUDE.md-mandated,
-proving these tests have teeth) actually meaningful — a real HIGH-severity install-script
-signal would stay in the gray zone even at `gray_floor=HIGH` (`HIGH <= HIGH <
-decided_ceiling`), which would make that verification check pass vacuously.
+Both behavior fixtures' real collector output is `Severity.HIGH` (matching
+`InstallScriptCollector`'s actual production severity) — not a softened stand-in value —
+so the "manually raise `GateConfig.gray_floor` to `HIGH`" sensitivity check that worked
+for a hypothetical MEDIUM stand-in no longer suppresses them (`HIGH <= HIGH <
+decided_ceiling` still holds). The equivalent, honest check for a HIGH static signal is
+lowering `decided_ceiling` to `HIGH` instead (`HIGH <= sev < HIGH` is false for
+`sev=HIGH`) — see the sensitivity-check note at the bottom of this file.
 """
 
 from __future__ import annotations
@@ -75,6 +70,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from safesc.graph.report_agent import score
 from safesc.graph.specialists import behavior_agent, identity_agent
@@ -105,11 +101,9 @@ from safesc.graph.state import (
     union_keys,
     write_once,
 )
+from safesc.tools.scan.signals.behavior.install_script import InstallScriptCollector
 from safesc.tools.scan.signals.identity.typosquat import TyposquatCollector
-from safesc.tools.scan.signals.models import Dimension as ScanDimension
-from safesc.tools.scan.signals.models import Severity as ScanSeverity
-from safesc.tools.scan.signals.models import Signal as ScanSignal
-from safesc.tools.scan.signals.models import Spoofability
+from safesc.tools.scan.signals.registry_meta import PackageMetadata
 
 FIXTURES = Path(__file__).parent / "fixtures" / "attacks"
 OBFUSCATED_BUILD = FIXTURES / "obfuscated_build"
@@ -180,24 +174,22 @@ def _only_dep(deps, ecosystem: str, name: str):
 # --------------------------------------------------------------------------- #
 
 
-def _behavior_stand_in_collector(dep_name: str, *, source: str, evidence: list[str], message: str):
-    """A `collect_signals` fake that emits the real `tools.scan.signals.models.Signal` a
-    (currently nonexistent / network-bound) collector would produce for `dep_name`,
-    pushed through the real `_scan_signal_to_graph` adapter. See module docstring."""
+def _real_install_script_collector(dep_name: str, meta: PackageMetadata):
+    """A `collect_signals` fake that runs the REAL `InstallScriptCollector` end to end,
+    with its one underlying network call (`get_package_metadata`) mocked to return
+    `meta` — the exact pattern `test_stage3_signals.py::TestInstallScriptCollector`
+    already uses. Ecosystem dispatch, severity, code, and evidence are all real,
+    unmodified production logic; only the HTTP round-trip is stood in for."""
 
     def collect_signals(dep):
         if dep.name != dep_name:
             return []
-        scan_sig = ScanSignal(
-            dep=dep,
-            dimension=ScanDimension.BEHAVIOR,
-            code=source,
-            severity=ScanSeverity.MEDIUM,
-            message=message,
-            evidence=list(evidence),
-            spoofability=Spoofability.LOW,
-        )
-        return [_scan_signal_to_graph(scan_sig)]
+        with patch(
+            "safesc.tools.scan.signals.behavior.install_script.get_package_metadata",
+            new=AsyncMock(return_value=meta),
+        ):
+            scan_sigs = asyncio.run(InstallScriptCollector().collect(dep, MagicMock()))
+        return [_scan_signal_to_graph(s) for s in scan_sigs]
 
     return collect_signals
 
@@ -258,12 +250,10 @@ class TestObfuscatedBuild:
     DEP_NAME = "sysinfo-native-helper"
 
     def _collect_signals(self):
-        return _behavior_stand_in_collector(
-            self.DEP_NAME,
-            source="stage3.behavior.build_script_obfuscation",
-            evidence=["build.rs", "declares_build_script=true"],
-            message="declares a build script containing a high-entropy encoded blob",
-        )
+        # Mirrors what a real crates.io response looks like for a crate that declares a
+        # native link name (e.g. openssl-sys, libz-sys) — verified live while building
+        # this fixture (see module docstring).
+        return _real_install_script_collector(self.DEP_NAME, PackageMetadata(has_native_build_script=True))
 
     def test_stage0_1_discovers_and_parses(self):
         real = load_default_tools()
@@ -280,7 +270,8 @@ class TestObfuscatedBuild:
             s for s in state.signals if s.dep_key == dep_key(dep) and s.dimension is TrustDimension.BEHAVIOR
         ]
         assert len(behavior_signals) == 1
-        assert behavior_signals[0].severity is Severity.MEDIUM
+        assert behavior_signals[0].severity is Severity.HIGH  # real InstallScriptCollector severity
+        assert behavior_signals[0].evidence == ["lib_links!=null"]
 
     def test_gate_escalates_to_behavior_specialist_only(self):
         state = _run_spine(OBFUSCATED_BUILD, self._collect_signals())
@@ -353,12 +344,9 @@ class TestPoisonedInstallHook:
     DEP_NAME = "fast-json-utilities"
 
     def _collect_signals(self):
-        return _behavior_stand_in_collector(
-            self.DEP_NAME,
-            source="stage3.behavior.install_script",
-            evidence=["hasInstallScript=true", "scripts/setup.js"],
-            message="declares a postinstall hook that references network/env/eval",
-        )
+        # Mirrors what the real npm registry reports for a package whose resolved
+        # version declares a postinstall hook (package.json in this fixture).
+        return _real_install_script_collector(self.DEP_NAME, PackageMetadata(has_install_script=True))
 
     def test_stage0_1_discovers_and_parses(self):
         real = load_default_tools()
@@ -375,7 +363,8 @@ class TestPoisonedInstallHook:
             s for s in state.signals if s.dep_key == dep_key(dep) and s.dimension is TrustDimension.BEHAVIOR
         ]
         assert len(behavior_signals) == 1
-        assert behavior_signals[0].severity is Severity.MEDIUM
+        assert behavior_signals[0].severity is Severity.HIGH  # real InstallScriptCollector severity
+        assert behavior_signals[0].evidence == ["hasInstallScript=true"]
 
     def test_gate_escalates_to_behavior_specialist_only(self):
         state = _run_spine(POISONED_INSTALL_HOOK, self._collect_signals())
@@ -520,13 +509,23 @@ class TestCleanBaseline:
 
 
 # =========================================================================== #
-# Sensitivity check documentation (see CLAUDE.md §9 / this module's docstring): the
-# three attack tests above were manually proven to have teeth by constructing each
-# fixture's state exactly as above and confirming `plan_gate(state, GateConfig(
-# gray_floor=Severity.HIGH)).fan_out` is empty for all three (default gate: 1 each;
-# gray_floor=HIGH: 0 each). That check is deliberately NOT a standing test — no
-# production code was touched to run it (GateConfig is passed as a plain constructor
-# argument to the pure `plan_gate`), so there is nothing to revert. It is not committed
-# as a permanent test per the task's "do not tune thresholds" instruction: its only job
-# was to prove these assertions are not vacuous, once.
+# Sensitivity check documentation (see CLAUDE.md §9 / this module's docstring): these
+# tests were manually proven to have teeth, twice, using two different dials —
+# appropriately, since the three attack fixtures no longer share one static severity
+# now that the two behavior fixtures use the real `InstallScriptCollector` (HIGH) rather
+# than a MEDIUM stand-in, while `name_confusion`'s real `TyposquatCollector` stays MEDIUM:
+#
+#   * `name_confusion` (MEDIUM): `plan_gate(state, GateConfig(gray_floor=Severity.HIGH))
+#     .fan_out` empties (MEDIUM no longer clears the raised floor).
+#   * `obfuscated_build` / `poisoned_install_hook` (HIGH): raising `gray_floor` to HIGH
+#     does NOT suppress them (`HIGH <= HIGH < decided_ceiling` still holds) — the
+#     correct dial for a HIGH static signal is `decided_ceiling`. Lowering it to
+#     `Severity.HIGH` empties `fan_out` for both (`HIGH <= sev < HIGH` is false when
+#     `sev` is itself `HIGH`).
+#
+# Neither check is a standing test — no production code was touched to run either
+# (`GateConfig` is a plain constructor argument to the pure `plan_gate`), so there is
+# nothing to revert, and per the task's "do not tune thresholds" instruction they are
+# not committed as permanent tests. Their only job was to prove these assertions are not
+# vacuous, once.
 # =========================================================================== #

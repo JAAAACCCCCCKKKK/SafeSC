@@ -17,27 +17,24 @@ inert, harmless payload. No working exploit code, no real CVE, no vendored malwa
 dependency — they exist so a specialist has real, on-disk evidence content to reason
 over in the test, and so a human reviewer can see exactly what pattern this models.
 
-## Why the Stage-3 "behavior" signal is simulated, not collected live
+## How the Stage-3 "behavior" signal is produced
 
-SafeSC's real Stage-3 behavior collector
-(`safesc/tools/scan/signals/behavior/install_script.py`) only supports the `javascript`
-ecosystem, and even there it decides via a **live npm registry lookup**
-(`hasInstallScript`), not by reading a local file. Its own docstring says plainly:
+`tests/test_attack_fixtures.py` runs the **real** Stage-3 collector
+(`safesc/tools/scan/signals/behavior/install_script.py::InstallScriptCollector`) against
+this fixture's dependency, with only its one underlying network call
+(`get_package_metadata`, a live crates.io lookup in production) mocked to return a
+canned response — the same mocking pattern the collector's own unit tests use
+(`test_stage3_signals.py::TestInstallScriptCollector`). Everything else — ecosystem
+dispatch, dimension, severity (`HIGH`), code, message, and evidence — is real,
+unmodified production logic.
 
-> "Other ecosystems (Python `setup.py`, Rust `build.rs`) require inspecting the artifact
-> contents and are handled by a later, download-based stage; this collector emits
-> nothing for them."
-
-There is today no static/offline Rust build-script collector at all — build.rs content
-is only ever examined by Stage-4's `extract_install_scripts` (`deep_analysis_tool.py`),
-which requires cloning the dependency's real source repository. Since these tests are
-required to run fully offline with no network access, `tests/test_attack_fixtures.py`
-constructs the `tools.scan.signals.models.Signal` such a collector *would* emit and
-pushes it through the real `_scan_signal_to_graph` adapter — exercising the adapter
-faithfully while documenting that the collection step itself is a stand-in. See that
-test module's docstring for the full rationale, including why the simulated severity is
-MEDIUM (gray-zone, pending LLM verification) rather than the real `InstallScriptCollector`'s
-blunter HIGH.
-
-This is itself a real coverage gap worth a decision — see the new "Still open" items
-added to `CLAUDE.md` §9 alongside this fixture.
+Rust coverage in `InstallScriptCollector` is itself real, not fixture-only scaffolding:
+crates.io exposes a `lib_links` field on each published version, which mirrors the
+crate's Cargo.toml `links` key — and Cargo *requires* a build script whenever `links` is
+set. A non-null `lib_links` is therefore a sound, zero-false-positive proxy for "this
+crate has a build script" (verified live against crates.io while building this:
+`openssl-sys`/`libz-sys` are flagged, `serde`/`log` are not). It is, however,
+**incomplete**: a crate whose `build.rs` exists purely for codegen — no native linking,
+no `links` key — is not caught by this Stage-3 signal at all, and still needs Stage-4's
+`extract_install_scripts` (`deep_analysis_tool.py`, which clones the real source repo)
+to be seen. This gap is recorded in `CLAUDE.md` §9.

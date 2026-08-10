@@ -1,4 +1,18 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.8: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.9: Agent Architecture)
+
+> **v2.9 (two v2.7 findings closed).** Both undecided gaps recorded when the v2.7
+> attack-pattern fixtures landed are now resolved with real code, not documentation:
+> (1) `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` now includes `cargo.toml`, so a normal
+> Rust project (`Cargo.toml` + `Cargo.lock`, the common case) no longer trips a spurious
+> "0 dependencies" degraded note on every audit. (2) `InstallScriptCollector`
+> (`tools/scan/signals/behavior/install_script.py`) now covers **rust** as well as
+> javascript: crates.io exposes a `lib_links` field per version, which mirrors the
+> crate's Cargo.toml `links` key — and Cargo *requires* a build script whenever `links`
+> is set, making non-null `lib_links` a sound (if incomplete — pure-codegen build
+> scripts with no `links` key aren't caught) zero-false-positive Stage-3 proxy, verified
+> live against crates.io (`openssl-sys`/`libz-sys` flagged, `serde`/`log` not).
+> `tests/test_attack_fixtures.py`'s two behavior fixtures now run this real collector
+> (network mocked) instead of a hand-built stand-in signal — see §9.
 
 > **v2.8 (discovery exclude landed).** Landing the v2.7 attack-pattern fixtures
 > immediately surfaced a real gap: SafeSC's own self-audit workflow (`safesc.yml`,
@@ -403,10 +417,14 @@ Resolved in v2.6 (coded):
 - [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `safesc gc` (§3.4) end-to-end.
 
 Resolved in v2.7 (coded, offline case only):
-- [x] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1) — resolved via synthetic, **inert** attack-pattern fixtures (`tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook,name_confusion,clean_baseline}/`, each with a README naming the real pattern it shadows) and `tests/test_attack_fixtures.py`. Stage 0-1 (discover/parse) and — for the identity/typosquat fixture only — Stage 3 run the real, offline production code; the two behavior fixtures use a documented stand-in for Stage 3 (see below and the test module's docstring for exactly why). From there the real `plan_gate`, a real specialist with a stubbed `SpecialistDeps.llm` (§4.2/§4.3 fusion), and the real `report_agent.score` all run unmodified. Verified to have teeth: manually raising `GateConfig.gray_floor` to `HIGH` was confirmed to empty `plan_gate`'s fan-out for all three attack fixtures (no production code touched, nothing to revert). The `clean_baseline` fixture proves the gate discriminates (no fan-out, `passed`, empty `degraded_notes`) rather than just alarming.
+- [x] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1) — resolved via synthetic, **inert** attack-pattern fixtures (`tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook,name_confusion,clean_baseline}/`, each with a README naming the real pattern it shadows) and `tests/test_attack_fixtures.py`. Stage 0-1 (discover/parse) and Stage 3 (as of v2.9, all four fixtures — see below) run the real, offline production code. From there the real `plan_gate`, a real specialist with a stubbed `SpecialistDeps.llm` (§4.2/§4.3 fusion), and the real `report_agent.score` all run unmodified. Verified to have teeth: manually confirmed both `GateConfig.gray_floor=HIGH` (suppresses the MEDIUM identity signal) and `decided_ceiling=HIGH` (suppresses the two HIGH behavior signals) empty `plan_gate`'s fan-out as expected (no production code touched, nothing to revert — see v2.9). The `clean_baseline` fixture proves the gate discriminates (no fan-out, `passed`, empty `degraded_notes`) rather than just alarming.
 
 Resolved in v2.8 (coded):
 - [x] Discovery path exclusion — landing the v2.7 fixtures broke SafeSC's own self-audit workflow (it correctly flagged its own test data: a real typosquat, `lodash@4.17.21`'s known OSV vulnerability). `discover()` now auto-loads a gitignore-syntax `.safescignore` from the scanned root, plus a layered `exclude` list from a new `--exclude` CLI flag / Action input, using `pathspec` for real gitignore semantics (§2.1). Fixed here via the repo's own `.safescignore` excluding `tests/fixtures/attacks/` — no workflow change needed, since `.safescignore` is auto-discovered.
+
+Resolved in v2.9 (coded):
+- [x] `Cargo.toml` false "0 dependencies" degraded note — `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` now includes `cargo.toml` (alongside `pyproject.toml`/`setup.cfg`), so a normal Rust project no longer trips a spurious degraded note on every audit. Regression test: `test_graph_spine.py::test_index_node_does_not_flag_cargo_toml_alongside_cargo_lock`.
+- [x] Stage-3 Rust behavior coverage — `InstallScriptCollector` (§2.1) now supports `rust` via a real, verified-live crates.io signal (`lib_links` non-null implies a build script, per Cargo's own `links`-key rules; see the v2.9 banner above for the full mechanism). Coverage is real but **intentionally narrow**: a `build.rs` that never sets `links` (pure codegen) is still invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone — this residual gap is recorded below, not hidden. `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` now run the real `InstallScriptCollector` (network mocked, `test_stage3_signals.py`'s established pattern) instead of the v2.7 hand-built stand-in signal.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
@@ -418,8 +436,7 @@ Still open:
 - [ ] Prompt-injection defense for specialists (carried from v1)
 - [ ] Monorepo / multi-config-file support (carried from v1)
 - [ ] Real-LLM end-to-end run against the attack-pattern fixtures (`tests/fixtures/attacks/`) — the offline/stubbed-LLM walkthrough is resolved above (v2.7); a live-model pass is cost- and flake-sensitive, so it belongs behind `@pytest.mark.integration`, skipped by default and run only on a schedule or manual dispatch, never the default PR path.
-- [ ] `Cargo.toml` is a Rust `lockfile_glob` (`RustAdapter.lockfile_globs`) but its `parse_lockfile` always returns `[]` for it by design ("Cargo.toml is a declaration file, not a lockfile") — yet it is not in `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` allowlist (which only covers `pyproject.toml`/`setup.cfg`). A normal Rust project (the common case: both `Cargo.toml` *and* `Cargo.lock` present) therefore trips the "discovered lockfile parsed 0 dependencies" degraded note on every audit, permanently marking Rust audits as incomplete analysis. Found while building `tests/fixtures/attacks/obfuscated_build/` (v2.7); needs a decision (most likely: add `Cargo.toml` to `_MANIFEST_ONLY_LOCKFILES`), not a fixture-side workaround.
-- [ ] Stage-3 behavior coverage has two real gaps, surfaced while building the v2.7 fixtures: `InstallScriptCollector` supports only `javascript`, and decides via a **live npm registry lookup** rather than local `package.json` content; there is **no** static/offline Rust build-script (`build.rs`) collector at all (Rust content is only ever examined by Stage-4's `extract_install_scripts`, which requires a live clone). `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` work around this with a documented, test-only stand-in signal (MEDIUM severity, "pending LLM verification" — deliberately *not* the real collector's HIGH) rather than live collection. Whether to add real offline detectors for these cases, and at what severity, is an open product decision, not something this test suite should decide unilaterally.
+- [ ] Stage-3 behavior coverage residual gap (narrowed in v2.9, not closed): `InstallScriptCollector`'s rust signal only fires when a crate declares a Cargo.toml `links` key (`lib_links` non-null on crates.io) — a `build.rs` that exists purely for codegen, with no `links` key, is invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone. Python has no Stage-3 behavior signal at all (`setup.py` is Stage-4-only). Whether either is worth a broader (necessarily less precise, or download-based) detector is an open product decision.
 
 ---
 
