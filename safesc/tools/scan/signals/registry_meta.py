@@ -57,6 +57,12 @@ class PackageMetadata:
     # the crates.io version record is a sound (zero false-positive), if incomplete,
     # proxy: crates whose build.rs exists purely for codegen and never set `links` are
     # not caught by this field. See behavior/install_script.py.
+    requires_source_build: bool = False  # python: the resolved version publishes an
+    # sdist but NO wheel, so pip cannot just unpack a built artifact — it must build
+    # from source, executing the project's PEP 517 backend (and its `setup.py`, or an
+    # in-tree `backend-path` backend). Wheels are only unpacked and never execute
+    # project code at install time, so a published wheel makes this False.
+    # See behavior/install_script.py.
 
     # --- Identity / provenance descriptors (used by the IdentityAgent to tell a
     #     legitimate companion package from a typosquat; §2.3). All best-effort. ---
@@ -205,6 +211,9 @@ async def _pypi_package_metadata(
         yanked_versions=frozenset(yanked),
         version_present=_pypi_contains(published, dep.version) if published else True,
         version_yanked=_pypi_contains(frozenset(yanked), dep.version),
+        # Derived from the `releases` payload already fetched above — costs no extra
+        # HTTP request.
+        requires_source_build=_pypi_requires_source_build(releases, dep.version),
         author=author,
         repo_url=repo_url,
         homepage=_normalise_repo_url(info.get("home_page")) or (info.get("home_page") or None),
@@ -213,6 +222,45 @@ async def _pypi_package_metadata(
         first_release_at=first_at,
         latest_release_at=latest_at,
     )
+
+
+def _pypi_files_for(releases: dict, pinned: str) -> list[dict]:
+    """The release-file list for *pinned*, matched under PEP 440 like `_pypi_contains`
+    (so a non-canonical pin such as ``2.31`` still finds ``2.31.0``'s files)."""
+    files = releases.get(pinned)
+    if files is not None:
+        return files if isinstance(files, list) else []
+    try:
+        from packaging.version import InvalidVersion, Version  # ubiquitous; lazy import
+    except Exception:  # pragma: no cover - packaging effectively always present
+        return []
+    try:
+        target = Version(pinned)
+    except InvalidVersion:
+        return []
+    for candidate, candidate_files in releases.items():
+        try:
+            if Version(candidate) == target:
+                return candidate_files if isinstance(candidate_files, list) else []
+        except InvalidVersion:
+            continue
+    return []
+
+
+def _pypi_requires_source_build(releases: dict, pinned: str) -> bool:
+    """True when installing *pinned* must build from source, executing project code.
+
+    A wheel is only unpacked, so a published ``bdist_wheel`` means no project build
+    code runs at install time. An sdist with no wheel forces pip to invoke the PEP 517
+    backend (``setup.py``/an in-tree backend) — the Python analogue of an npm install
+    hook. Deliberately conservative: an empty or wheel-bearing file list, or an exotic
+    set with no sdist at all, returns False rather than guessing.
+    """
+    files = _pypi_files_for(releases, pinned)
+    if not files:
+        return False
+    kinds = {f.get("packagetype") for f in files if isinstance(f, dict)}
+    return "sdist" in kinds and "bdist_wheel" not in kinds
 
 
 def _pypi_release_span(releases: dict) -> tuple[str | None, str | None]:

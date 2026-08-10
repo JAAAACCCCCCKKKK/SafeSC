@@ -1,4 +1,18 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.9: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.10: Agent Architecture)
+
+> **v2.10 (Stage-3 behavior gap closed — as a split decision).** The residual v2.9 gap is
+> now resolved, but **not** by implementing both halves — measurement showed one half
+> should not be built. **Python: implemented.** `InstallScriptCollector` now flags a
+> resolved version that publishes an sdist but **no wheel**, because pip must then build
+> from source and execute the project's PEP 517 backend / `setup.py` (a wheel is only
+> unpacked and runs no project code). It is derived from the `releases` payload
+> `_pypi_package_metadata` already fetches, so it costs **zero extra HTTP requests**, and
+> it is emitted at **MEDIUM**, not HIGH — a packaging choice must land in the §2.2-B gray
+> zone for BehaviorAgent verification, never fail a CI gate alone (cf. `typosquat.py`'s
+> identical MEDIUM cap). Measured precision on a real dependency set: **0 of 45** flagged,
+> while correctly firing on genuinely sdist-only releases (`pycparser==2.14`,
+> `python-Levenshtein==0.12.0`), all verified live. **Rust: closed as won't-do, with
+> evidence.** See §9 — broadening it would actively harm the tool. Builds on v2.9.
 
 > **v2.9 (two v2.7 findings closed).** Both undecided gaps recorded when the v2.7
 > attack-pattern fixtures landed are now resolved with real code, not documentation:
@@ -424,7 +438,12 @@ Resolved in v2.8 (coded):
 
 Resolved in v2.9 (coded):
 - [x] `Cargo.toml` false "0 dependencies" degraded note — `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` now includes `cargo.toml` (alongside `pyproject.toml`/`setup.cfg`), so a normal Rust project no longer trips a spurious degraded note on every audit. Regression test: `test_graph_spine.py::test_index_node_does_not_flag_cargo_toml_alongside_cargo_lock`.
-- [x] Stage-3 Rust behavior coverage — `InstallScriptCollector` (§2.1) now supports `rust` via a real, verified-live crates.io signal (`lib_links` non-null implies a build script, per Cargo's own `links`-key rules; see the v2.9 banner above for the full mechanism). Coverage is real but **intentionally narrow**: a `build.rs` that never sets `links` (pure codegen) is still invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone — this residual gap is recorded below, not hidden. `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` now run the real `InstallScriptCollector` (network mocked, `test_stage3_signals.py`'s established pattern) instead of the v2.7 hand-built stand-in signal.
+- [x] Stage-3 Rust behavior coverage — `InstallScriptCollector` (§2.1) now supports `rust` via a real, verified-live crates.io signal (`lib_links` non-null implies a build script, per Cargo's own `links`-key rules; see the v2.9 banner above for the full mechanism). Coverage is real but **intentionally narrow**: a `build.rs` that never sets `links` (pure codegen) is still invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone. v2.10 investigated broadening this and deliberately **kept it narrow** — see the v2.10 entry below for the measurements. `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` now run the real `InstallScriptCollector` (network mocked, `test_stage3_signals.py`'s established pattern) instead of the v2.7 hand-built stand-in signal.
+
+Resolved in v2.10 (coded — a split decision, one half deliberately not built):
+- [x] Stage-3 behavior coverage residual gap (was carried from v2.9) — **resolved as two separate decisions, because measurement showed the two halves point opposite ways.**
+  - **Python — implemented.** `InstallScriptCollector` now covers `python`: a resolved version publishing an sdist and **no wheel** must be built from source at install time, executing the project's PEP 517 backend (`setup.py`, or an in-tree `backend-path` backend); a published wheel is only unpacked and runs no project code. `PackageMetadata.requires_source_build` is derived from the `releases` payload `_pypi_package_metadata` already fetches — **zero extra HTTP requests**. Emitted at **MEDIUM** (not the npm/rust HIGH) so it lands in the §2.2-B gray zone for BehaviorAgent intent verification but can never fail a CI gate on its own — a packaging choice is weak evidence of intent, the same reasoning behind `typosquat.py`'s MEDIUM cap. Precision measured before shipping: **0 of 45** real dependencies flagged, with true positives (`pycparser==2.14`, `python-Levenshtein==0.12.0`) correctly firing — verified live against PyPI.
+  - **Rust — closed as won't-do, on evidence.** Broadening beyond `links` was investigated and **rejected**: build scripts are the *norm* in Rust, not the exception. `serde`, `libc`, `anyhow` and `proc-macro2` all ship a `build.rs` (4 of 6 crates spot-checked, confirmed by unpacking the published `.crate` files) while declaring **neither** a `links` key nor `[build-dependencies]` — so they are invisible to *any* cheap metadata proxy, and the only complete detector is download-based. But completeness is not even desirable here: a "has a build.rs at all" signal would fire on roughly two-thirds of every Rust dependency tree, which is useless as an escalation trigger and would blow both the §5.1 5–10% Stage-4 trigger-rate target and the §5.3 LLM budget. `lib_links` is the correct signal *because* it is selective (2 of 12 sampled crates). `[build-dependencies]` (`kind: "build"`, available via the crates.io API and sparse index) was also evaluated as a middle option and rejected for the same reason — it catches `cc`/`bindgen` users like `ring` and `openssl-sys` that `links` largely already catches, while still missing every std-only build script. The residual exposure is accepted and covered downstream: Stage-4's `deep_analysis_tool.extract_install_scripts` reads real `build.rs` content for any crate that reaches it.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
@@ -436,7 +455,6 @@ Still open:
 - [ ] Prompt-injection defense for specialists (carried from v1)
 - [ ] Monorepo / multi-config-file support (carried from v1)
 - [ ] Real-LLM end-to-end run against the attack-pattern fixtures (`tests/fixtures/attacks/`) — the offline/stubbed-LLM walkthrough is resolved above (v2.7); a live-model pass is cost- and flake-sensitive, so it belongs behind `@pytest.mark.integration`, skipped by default and run only on a schedule or manual dispatch, never the default PR path.
-- [ ] Stage-3 behavior coverage residual gap (narrowed in v2.9, not closed): `InstallScriptCollector`'s rust signal only fires when a crate declares a Cargo.toml `links` key (`lib_links` non-null on crates.io) — a `build.rs` that exists purely for codegen, with no `links` key, is invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone. Python has no Stage-3 behavior signal at all (`setup.py` is Stage-4-only). Whether either is worth a broader (necessarily less precise, or download-based) detector is an open product decision.
 
 ---
 

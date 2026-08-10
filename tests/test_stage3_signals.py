@@ -653,12 +653,16 @@ class TestInstallScriptCollector:
             sigs = await self.c.collect(_dep(ecosystem="javascript"), MagicMock())
         assert sigs == []
 
-    async def test_unsupported_ecosystem_no_metadata_call(self):
+    @pytest.mark.parametrize("ecosystem", ["go", "java"])
+    async def test_unsupported_ecosystem_no_metadata_call(self, ecosystem):
+        # go/java have no cheap registry flag for install/build hooks, so the collector
+        # must short-circuit before spending an HTTP request. (python IS supported now —
+        # see the sdist-only tests below.)
         with patch(
             "safesc.tools.scan.signals.behavior.install_script.get_package_metadata",
             new=AsyncMock(return_value=None),
         ) as m:
-            sigs = await self.c.collect(_dep(ecosystem="python"), MagicMock())
+            sigs = await self.c.collect(_dep(ecosystem=ecosystem), MagicMock())
         assert sigs == []
         m.assert_not_called()
 
@@ -695,6 +699,55 @@ class TestInstallScriptCollector:
             assert await self.c.collect(_dep(ecosystem="rust"), MagicMock()) == []
         with self._patch_meta(PackageMetadata(has_install_script=False, has_native_build_script=True)):
             assert await self.c.collect(_dep(ecosystem="javascript"), MagicMock()) == []
+
+    async def test_python_sdist_only_flags_medium_not_high(self):
+        # MEDIUM is load-bearing: a packaging choice must land in the gray zone for LLM
+        # verification, never fail a CI gate on its own (fail_threshold is HIGH).
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        with self._patch_meta(PackageMetadata(requires_source_build=True)):
+            sigs = await self.c.collect(_dep(ecosystem="python"), MagicMock())
+        assert len(sigs) == 1
+        assert sigs[0].code == "behavior.install_script"
+        assert sigs[0].severity == Severity.MEDIUM
+        assert "sdist_only=true" in sigs[0].evidence
+        assert sigs[0].false_positive_hints  # must ship FP guidance for a noisy-ish flag
+
+    async def test_python_with_wheel_no_signal(self):
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        with self._patch_meta(PackageMetadata(requires_source_build=False)):
+            assert await self.c.collect(_dep(ecosystem="python"), MagicMock()) == []
+
+    async def test_python_ignores_other_ecosystems_fields(self):
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        meta = PackageMetadata(has_install_script=True, has_native_build_script=True)
+        with self._patch_meta(meta):
+            assert await self.c.collect(_dep(ecosystem="python"), MagicMock()) == []
+
+    def test_flagged_is_false_for_unhandled_ecosystem(self):
+        # Defensive guard: collect() short-circuits on _METADATA_SUPPORTED before
+        # reaching _flagged, so this only fires if the two ever drift apart.
+        from safesc.tools.scan.signals.behavior.install_script import _flagged
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        every_flag = PackageMetadata(
+            has_install_script=True, has_native_build_script=True, requires_source_build=True
+        )
+        assert _flagged(_dep(ecosystem="go"), every_flag) is False
+
+    def test_severity_table_covers_every_supported_ecosystem(self):
+        # Guard against adding an ecosystem to _METADATA_SUPPORTED without giving it a
+        # severity, which would KeyError at collect() time on a real audit.
+        from safesc.tools.scan.signals.behavior.install_script import (
+            _FALSE_POSITIVE_HINTS,
+            _METADATA_SUPPORTED,
+            _SEVERITY,
+        )
+
+        assert set(_SEVERITY) == _METADATA_SUPPORTED
+        assert set(_FALSE_POSITIVE_HINTS) == _METADATA_SUPPORTED
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1056,67 @@ class TestPackageMetadata:
 
         meta = await _crates_package_metadata(_dep(version="0.9.108", ecosystem="rust"), session)
         assert meta.has_native_build_script is False
+
+    async def test_pypi_requires_source_build_sdist_only(self):
+        from safesc.tools.scan.signals.registry_meta import _pypi_package_metadata
+
+        data = {
+            "info": {},
+            "releases": {
+                "1.0.0": [{"packagetype": "sdist", "yanked": False}],
+                "1.1.0": [
+                    {"packagetype": "sdist", "yanked": False},
+                    {"packagetype": "bdist_wheel", "yanked": False},
+                ],
+            },
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        # sdist with no wheel -> pip must build from source (project code executes)
+        meta = await _pypi_package_metadata(_dep(version="1.0.0"), session)
+        assert meta.requires_source_build is True
+        # a published wheel is only unpacked -> no project code runs at install
+        meta = await _pypi_package_metadata(_dep(version="1.1.0"), session)
+        assert meta.requires_source_build is False
+
+    async def test_pypi_requires_source_build_is_conservative(self):
+        from safesc.tools.scan.signals.registry_meta import _pypi_package_metadata
+
+        data = {
+            "info": {},
+            "releases": {
+                "1.0.0": [],                                      # no files at all
+                "2.0.0": [{"packagetype": "bdist_egg"}],          # exotic, no sdist
+            },
+        }
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        for version in ("1.0.0", "2.0.0", "9.9.9"):  # incl. a version not in releases
+            meta = await _pypi_package_metadata(_dep(version=version), session)
+            assert meta.requires_source_build is False, version
+
+    def test_pypi_requires_source_build_tolerates_unparseable_versions(self):
+        # Mirrors _pypi_contains' guards: neither an unparseable pin nor an unparseable
+        # key in `releases` may raise — both degrade to "not sdist-only".
+        from safesc.tools.scan.signals.registry_meta import _pypi_requires_source_build
+
+        releases = {"not-a-version": [{"packagetype": "sdist"}]}
+        assert _pypi_requires_source_build(releases, "also-not-a-version") is False
+        assert _pypi_requires_source_build(releases, "1.0.0") is False
+        assert _pypi_requires_source_build({}, "1.0.0") is False
+
+    async def test_pypi_requires_source_build_matches_non_canonical_pin(self):
+        # Mirrors _pypi_contains: a lockfile may pin an equal-but-non-canonical form.
+        from safesc.tools.scan.signals.registry_meta import _pypi_package_metadata
+
+        data = {"info": {}, "releases": {"2.31.0": [{"packagetype": "sdist"}]}}
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=data)
+
+        meta = await _pypi_package_metadata(_dep(version="2.31"), session)
+        assert meta.requires_source_build is True
 
     async def test_crates_lib_links_absent_field_defaults_false(self):
         from safesc.tools.scan.signals.registry_meta import _crates_package_metadata
