@@ -1,0 +1,13 @@
+# Synthetic fixture — see README.md. This is NOT the audited project's own manifest; it
+# stands in for the "sysinfo-native-helper" crate's own Cargo.toml (the crate pinned by
+# Cargo.lock in this directory), i.e. what a specialist would see if it cloned/downloaded
+# that dependency. Declaring `build = "build.rs"` is the structural marker Stage 3 keys
+# off: this crate runs a build script at compile time.
+[package]
+name = "sysinfo-native-helper"
+version = "0.4.2"
+edition = "2021"
+build = "build.rs"
+description = "Attack-pattern fixture (build-script obfuscation) — see README.md. Not a real package."
+
+[dependencies]

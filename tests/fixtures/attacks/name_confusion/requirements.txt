@@ -1,0 +1,5 @@
+# Attack-PATTERN fixture: name-confusion / typosquat (dependency-confusion-style pattern).
+# See README.md — this pins 'reqeusts', a single-transposition near-miss of the real,
+# extremely popular PyPI package 'requests'. No malicious code; this file only pins a
+# name+version, exactly like a real requirements.txt.
+reqeusts==2.31.0

@@ -1,4 +1,20 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.6: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.7: Agent Architecture)
+
+> **v2.7 (attack-pattern fixtures landed).** The §9 item "end-to-end walkthrough vs. XZ
+> Utils / event-stream / PyTorch dependency confusion" is now **resolved for the
+> offline/stubbed-LLM case**: `tests/fixtures/attacks/{obfuscated_build,
+> poisoned_install_hook,name_confusion,clean_baseline}/` are synthetic, inert fixtures
+> reproducing the *structural* shape of a build-script payload, a poisoned install hook,
+> and a typosquat, plus a negative control; `tests/test_attack_fixtures.py` chains the
+> real spine nodes (`index_node`→`hash_verify_node`→`cheap_signals_node`→`gate_node`,
+> §2.2-B) with their real Annotated reducers (§2.6), the real post-Stage-3 gate
+> (`plan_gate`), a real specialist (`behavior_agent`/`identity_agent`) with a stubbed
+> `SpecialistDeps.llm`, and the real scorer (`report_agent.score`) — proving the whole
+> v1-signal→graph-adapter→gate→fusion→scorer spine actually detects these patterns and
+> that a clean project stays clean. Runs fully offline, no key, no network, in the
+> default `pytest tests/` job (no marker). Two genuine, undecided coverage gaps were
+> found while building the fixtures and are recorded below rather than silently patched;
+> a real-LLM run against the same fixtures remains open. Builds on v2.6 (stores landed).
 
 > **v2.6 (stores landed).** The two §3 store clients are now **implemented and unit-tested**: `memory/short_term.py` (`ShortTermStore` — the injectable Redis seam serving the hot cache, the checkpointer factory, and the SessionManager's ZSET ops via one client) and `memory/long_term.py` (`PGVectorStore` — `query_similar`/`upsert`/`get`/`gc` over a plain DB-API connection, vectors written as `::vector` literals, defense-in-depth `GREATEST` max-wins, §3.4 differentiated-retention GC). Both use **lazy imports** so the core stays installable without the new optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-redis); both are consumed by the MemoryManager purely via **injection** (§6.1.6). `MemoryManager.gc()` now delegates to the vector store so `safesc gc` (§3.4) is wired end-to-end. What remains is **deployment**, not code: a live Redis/Postgres instance, a pinned embedding model+dimension, and the similarity cutoff. Builds on v2.5 (harness + memory-manager).
 
@@ -371,6 +387,9 @@ Resolved in v2.5 (coded):
 Resolved in v2.6 (coded):
 - [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `safesc gc` (§3.4) end-to-end.
 
+Resolved in v2.7 (coded, offline case only):
+- [x] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1) — resolved via synthetic, **inert** attack-pattern fixtures (`tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook,name_confusion,clean_baseline}/`, each with a README naming the real pattern it shadows) and `tests/test_attack_fixtures.py`. Stage 0-1 (discover/parse) and — for the identity/typosquat fixture only — Stage 3 run the real, offline production code; the two behavior fixtures use a documented stand-in for Stage 3 (see below and the test module's docstring for exactly why). From there the real `plan_gate`, a real specialist with a stubbed `SpecialistDeps.llm` (§4.2/§4.3 fusion), and the real `report_agent.score` all run unmodified. Verified to have teeth: manually raising `GateConfig.gray_floor` to `HIGH` was confirmed to empty `plan_gate`'s fan-out for all three attack fixtures (no production code touched, nothing to revert). The `clean_baseline` fixture proves the gate discriminates (no fan-out, `passed`, empty `degraded_notes`) rather than just alarming.
+
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
 - [ ] Concrete hard cap *value* for LLM calls per run — mechanism and enforcement have shipped (`sum_deltas` + `would_exceed_cap`, enforced deterministically in `plan_gate`, §5.3); only the numeric ceiling is TBD
@@ -380,7 +399,9 @@ Still open:
 - [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination
 - [ ] Prompt-injection defense for specialists (carried from v1)
 - [ ] Monorepo / multi-config-file support (carried from v1)
-- [ ] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1)
+- [ ] Real-LLM end-to-end run against the attack-pattern fixtures (`tests/fixtures/attacks/`) — the offline/stubbed-LLM walkthrough is resolved above (v2.7); a live-model pass is cost- and flake-sensitive, so it belongs behind `@pytest.mark.integration`, skipped by default and run only on a schedule or manual dispatch, never the default PR path.
+- [ ] `Cargo.toml` is a Rust `lockfile_glob` (`RustAdapter.lockfile_globs`) but its `parse_lockfile` always returns `[]` for it by design ("Cargo.toml is a declaration file, not a lockfile") — yet it is not in `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` allowlist (which only covers `pyproject.toml`/`setup.cfg`). A normal Rust project (the common case: both `Cargo.toml` *and* `Cargo.lock` present) therefore trips the "discovered lockfile parsed 0 dependencies" degraded note on every audit, permanently marking Rust audits as incomplete analysis. Found while building `tests/fixtures/attacks/obfuscated_build/` (v2.7); needs a decision (most likely: add `Cargo.toml` to `_MANIFEST_ONLY_LOCKFILES`), not a fixture-side workaround.
+- [ ] Stage-3 behavior coverage has two real gaps, surfaced while building the v2.7 fixtures: `InstallScriptCollector` supports only `javascript`, and decides via a **live npm registry lookup** rather than local `package.json` content; there is **no** static/offline Rust build-script (`build.rs`) collector at all (Rust content is only ever examined by Stage-4's `extract_install_scripts`, which requires a live clone). `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` work around this with a documented, test-only stand-in signal (MEDIUM severity, "pending LLM verification" — deliberately *not* the real collector's HIGH) rather than live collection. Whether to add real offline detectors for these cases, and at what severity, is an open product decision, not something this test suite should decide unilaterally.
 
 ---
 

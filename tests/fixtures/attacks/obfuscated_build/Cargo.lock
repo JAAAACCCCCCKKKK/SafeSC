@@ -1,0 +1,12 @@
+# Synthetic fixture lockfile for tests/test_attack_fixtures.py.
+# Pins the fixture's one "malicious" crate so Stage 0-1 (discovery + parse) has a real,
+# offline dependency to work with. See README.md in this directory for what this
+# fixture models and why Cargo.lock exists here (Cargo.toml alone does not parse to a
+# Dependency in SafeSC's Rust adapter).
+version = 3
+
+[[package]]
+name = "sysinfo-native-helper"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d41d8cd98f00b204e9800998ecf8427e0000000000000000000000000000ff"
