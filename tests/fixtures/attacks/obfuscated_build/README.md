@@ -25,8 +25,13 @@ this fixture's dependency, with only its one underlying network call
 (`get_package_metadata`, a live crates.io lookup in production) mocked to return a
 canned response — the same mocking pattern the collector's own unit tests use
 (`test_stage3_signals.py::TestInstallScriptCollector`). Everything else — ecosystem
-dispatch, dimension, severity (`HIGH`), code, message, and evidence — is real,
-unmodified production logic.
+dispatch, dimension, severity (`MEDIUM`), code, message, and evidence — is real,
+unmodified production logic. `MEDIUM` rather than `HIGH` is deliberate: declaring a
+Cargo `links` key is routine for every `-sys` crate, so the signal lands in the gray
+zone for BehaviorAgent verification instead of failing a CI gate on its own (see
+`install_script.py`'s "Why severities differ"). This fixture still fails the gate in
+the end — but only once the specialist confirms malicious intent, which is exactly the
+escalate-only design working as intended.
 
 Rust coverage in `InstallScriptCollector` is itself real, not fixture-only scaffolding:
 crates.io exposes a `lib_links` field on each published version, which mirrors the

@@ -671,7 +671,11 @@ class TestInstallScriptCollector:
             sigs = await self.c.collect(_dep(ecosystem="javascript"), MagicMock())
         assert sigs == []
 
-    async def test_rust_native_build_script_flags_high(self):
+    async def test_rust_native_build_script_flags_medium_not_high(self):
+        # MEDIUM is load-bearing: `links` is routine for every -sys crate
+        # (openssl-sys, ring, libz-sys), so emitting HIGH would fail the CI gate on
+        # essentially every real Rust dependency tree — and §4.3 being escalate-only
+        # means the BehaviorAgent could never bring it back down.
         from safesc.tools.scan.signals.registry_meta import PackageMetadata
 
         meta = PackageMetadata(has_native_build_script=True)
@@ -679,7 +683,7 @@ class TestInstallScriptCollector:
             sigs = await self.c.collect(_dep(ecosystem="rust"), MagicMock())
         assert len(sigs) == 1
         assert sigs[0].code == "behavior.install_script"
-        assert sigs[0].severity == Severity.HIGH
+        assert sigs[0].severity == Severity.MEDIUM
         assert sigs[0].evidence == ["lib_links!=null"]
 
     async def test_rust_no_native_build_script_no_signal(self):
@@ -748,6 +752,22 @@ class TestInstallScriptCollector:
 
         assert set(_SEVERITY) == _METADATA_SUPPORTED
         assert set(_FALSE_POSITIVE_HINTS) == _METADATA_SUPPORTED
+
+    def test_only_optedin_code_execution_can_fail_a_gate(self):
+        # Pins the severity *policy*, not just the values (see this module's "Why
+        # severities differ"): only npm's flag denotes deliberate opted-in code
+        # execution and may reach the HIGH fail_threshold. `links` / sdist-only are
+        # routine build-system facts on ubiquitous legitimate packages, so they must
+        # stay strictly below the gate and be resolved by the BehaviorAgent instead.
+        from safesc.graph.report_agent import ScoreConfig
+        from safesc.tools.scan.signals.behavior.install_script import _SEVERITY
+
+        gate = ScoreConfig().fail_threshold.name  # "HIGH"
+        gating = {eco for eco, sev in _SEVERITY.items() if sev.name == gate}
+        assert gating == {"javascript"}, (
+            f"{gating - {'javascript'}} would newly fail CI gates on packages that "
+            f"merely declare a build step; keep them in the gray zone (MEDIUM)"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -56,13 +56,12 @@ purely for codegen, with no `links` key, isn't caught) proxy for "this crate has
 script," verified live against crates.io (`openssl-sys`/`libz-sys` -> flagged,
 `serde`/`log` -> not) while building this. See `install_script.py`'s module docstring.
 
-Both behavior fixtures' real collector output is `Severity.HIGH` (matching
-`InstallScriptCollector`'s actual production severity) — not a softened stand-in value —
-so the "manually raise `GateConfig.gray_floor` to `HIGH`" sensitivity check that worked
-for a hypothetical MEDIUM stand-in no longer suppresses them (`HIGH <= HIGH <
-decided_ceiling` still holds). The equivalent, honest check for a HIGH static signal is
-lowering `decided_ceiling` to `HIGH` instead (`HIGH <= sev < HIGH` is false for
-`sev=HIGH`) — see the sensitivity-check note at the bottom of this file.
+Each fixture's static severity below is the real collector's actual production value,
+never a softened stand-in — and they deliberately differ, which the sensitivity check at
+the bottom of this file has to account for: `name_confusion` and `obfuscated_build` are
+MEDIUM (a name near-miss and a Cargo `links` declaration are both routine facts pending
+LLM verification), while `poisoned_install_hook` is HIGH (an npm lifecycle hook is
+opted-in code execution). See `install_script.py`'s "Why severities differ".
 """
 
 from __future__ import annotations
@@ -270,7 +269,9 @@ class TestObfuscatedBuild:
             s for s in state.signals if s.dep_key == dep_key(dep) and s.dimension is TrustDimension.BEHAVIOR
         ]
         assert len(behavior_signals) == 1
-        assert behavior_signals[0].severity is Severity.HIGH  # real InstallScriptCollector severity
+        # MEDIUM: `links` is a routine build-system fact, so the real collector keeps it
+        # in the gray zone rather than failing a gate on its own (see install_script.py).
+        assert behavior_signals[0].severity is Severity.MEDIUM
         assert behavior_signals[0].evidence == ["lib_links!=null"]
 
     def test_gate_escalates_to_behavior_specialist_only(self):
@@ -510,18 +511,16 @@ class TestCleanBaseline:
 
 # =========================================================================== #
 # Sensitivity check documentation (see CLAUDE.md §9 / this module's docstring): these
-# tests were manually proven to have teeth, twice, using two different dials —
-# appropriately, since the three attack fixtures no longer share one static severity
-# now that the two behavior fixtures use the real `InstallScriptCollector` (HIGH) rather
-# than a MEDIUM stand-in, while `name_confusion`'s real `TyposquatCollector` stays MEDIUM:
+# tests were manually proven to have teeth using two different dials, because the three
+# attack fixtures carry two different real static severities:
 #
-#   * `name_confusion` (MEDIUM): `plan_gate(state, GateConfig(gray_floor=Severity.HIGH))
-#     .fan_out` empties (MEDIUM no longer clears the raised floor).
-#   * `obfuscated_build` / `poisoned_install_hook` (HIGH): raising `gray_floor` to HIGH
-#     does NOT suppress them (`HIGH <= HIGH < decided_ceiling` still holds) — the
-#     correct dial for a HIGH static signal is `decided_ceiling`. Lowering it to
-#     `Severity.HIGH` empties `fan_out` for both (`HIGH <= sev < HIGH` is false when
-#     `sev` is itself `HIGH`).
+#   * `name_confusion` + `obfuscated_build` (MEDIUM): `plan_gate(state, GateConfig(
+#     gray_floor=Severity.HIGH)).fan_out` empties — MEDIUM no longer clears the raised
+#     floor.
+#   * `poisoned_install_hook` (HIGH): raising `gray_floor` to HIGH does NOT suppress it
+#     (`HIGH <= HIGH < decided_ceiling` still holds), so the correct dial for a HIGH
+#     static signal is `decided_ceiling`. Lowering it to `Severity.HIGH` empties
+#     `fan_out` (`HIGH <= sev < HIGH` is false when `sev` is itself `HIGH`).
 #
 # Neither check is a standing test — no production code was touched to run either
 # (`GateConfig` is a plain constructor argument to the pure `plan_gate`), so there is

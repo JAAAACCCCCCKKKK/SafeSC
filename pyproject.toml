@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safesc"
-version = "1.2.0"
+version = "1.2.1"
 description = "Supply-chain trust auditing for CI — deterministic signals with escalate-only LLM analysis"
 readme = "README.md"
 requires-python = ">=3.12"

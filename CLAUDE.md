@@ -1,4 +1,19 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.10: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.11: Agent Architecture)
+
+> **v2.11 (severity policy corrected before release).** Pre-release review of v1.2.1
+> caught that v2.9 shipped the new rust `links` signal at **HIGH**, mirroring npm. That
+> was wrong, and the blast radius was measured: HIGH is `ScoreConfig.fail_threshold`, so
+> **every** project depending on a `links`-declaring crate — `openssl-sys`, `ring`,
+> `libz-sys`, i.e. a large share of real Rust trees — would have started failing its CI
+> gate on upgrade, with no path back down because §4.3 is escalate-only. Rust is now
+> **MEDIUM**, alongside python. The governing rule is now stated explicitly in
+> `install_script.py` and pinned by a test
+> (`test_only_optedin_code_execution_can_fail_a_gate`): **only opted-in code execution
+> may reach the gate.** An npm lifecycle hook exists for no purpose other than running
+> code, so it stays HIGH; a Cargo `links` key and an sdist-only release are routine
+> *build-system facts* on ubiquitous legitimate packages, so they inform the §2.2-B gray
+> zone and are resolved by the BehaviorAgent instead. Same principle as
+> `typosquat.py`'s long-standing MEDIUM cap. Builds on v2.10.
 
 > **v2.10 (Stage-3 behavior gap closed — as a split decision).** The residual v2.9 gap is
 > now resolved, but **not** by implementing both halves — measurement showed one half
@@ -442,8 +457,11 @@ Resolved in v2.9 (coded):
 
 Resolved in v2.10 (coded — a split decision, one half deliberately not built):
 - [x] Stage-3 behavior coverage residual gap (was carried from v2.9) — **resolved as two separate decisions, because measurement showed the two halves point opposite ways.**
-  - **Python — implemented.** `InstallScriptCollector` now covers `python`: a resolved version publishing an sdist and **no wheel** must be built from source at install time, executing the project's PEP 517 backend (`setup.py`, or an in-tree `backend-path` backend); a published wheel is only unpacked and runs no project code. `PackageMetadata.requires_source_build` is derived from the `releases` payload `_pypi_package_metadata` already fetches — **zero extra HTTP requests**. Emitted at **MEDIUM** (not the npm/rust HIGH) so it lands in the §2.2-B gray zone for BehaviorAgent intent verification but can never fail a CI gate on its own — a packaging choice is weak evidence of intent, the same reasoning behind `typosquat.py`'s MEDIUM cap. Precision measured before shipping: **0 of 45** real dependencies flagged, with true positives (`pycparser==2.14`, `python-Levenshtein==0.12.0`) correctly firing — verified live against PyPI.
+  - **Python — implemented.** `InstallScriptCollector` now covers `python`: a resolved version publishing an sdist and **no wheel** must be built from source at install time, executing the project's PEP 517 backend (`setup.py`, or an in-tree `backend-path` backend); a published wheel is only unpacked and runs no project code. `PackageMetadata.requires_source_build` is derived from the `releases` payload `_pypi_package_metadata` already fetches — **zero extra HTTP requests**. Emitted at **MEDIUM** (not npm's HIGH) so it lands in the §2.2-B gray zone for BehaviorAgent intent verification but can never fail a CI gate on its own — a packaging choice is weak evidence of intent, the same reasoning behind `typosquat.py`'s MEDIUM cap. (v2.11 subsequently applied that same reasoning to the rust signal.) Precision measured before shipping: **0 of 45** real dependencies flagged, with true positives (`pycparser==2.14`, `python-Levenshtein==0.12.0`) correctly firing — verified live against PyPI.
   - **Rust — closed as won't-do, on evidence.** Broadening beyond `links` was investigated and **rejected**: build scripts are the *norm* in Rust, not the exception. `serde`, `libc`, `anyhow` and `proc-macro2` all ship a `build.rs` (4 of 6 crates spot-checked, confirmed by unpacking the published `.crate` files) while declaring **neither** a `links` key nor `[build-dependencies]` — so they are invisible to *any* cheap metadata proxy, and the only complete detector is download-based. But completeness is not even desirable here: a "has a build.rs at all" signal would fire on roughly two-thirds of every Rust dependency tree, which is useless as an escalation trigger and would blow both the §5.1 5–10% Stage-4 trigger-rate target and the §5.3 LLM budget. `lib_links` is the correct signal *because* it is selective (2 of 12 sampled crates). `[build-dependencies]` (`kind: "build"`, available via the crates.io API and sparse index) was also evaluated as a middle option and rejected for the same reason — it catches `cc`/`bindgen` users like `ring` and `openssl-sys` that `links` largely already catches, while still missing every std-only build script. The residual exposure is accepted and covered downstream: Stage-4's `deep_analysis_tool.extract_install_scripts` reads real `build.rs` content for any crate that reaches it.
+
+Resolved in v2.11 (coded):
+- [x] Stage-3 behavior severity policy — made explicit and test-pinned rather than left implicit per-ecosystem. **Only opted-in code execution may reach `ScoreConfig.fail_threshold`**: npm's lifecycle hook stays HIGH; rust's `links` and python's sdist-only are routine build-system facts on ubiquitous legitimate packages and are MEDIUM (gray zone → BehaviorAgent). Corrects v2.9, which shipped rust at HIGH and would have newly failed CI for every consumer of `openssl-sys`/`ring`/`libz-sys` — irrecoverably, since §4.3 lets the LLM escalate but never downgrade. Guarded by `test_stage3_signals.py::test_only_optedin_code_execution_can_fail_a_gate`, so adding a future gate-failing ecosystem signal is now a deliberate, visible act.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target

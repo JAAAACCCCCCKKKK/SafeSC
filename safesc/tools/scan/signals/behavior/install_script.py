@@ -11,7 +11,7 @@ Stage 3 without downloading the package:
 
 * **npm** (HIGH) — ``hasInstallScript`` (or a ``preinstall``/``install``/
   ``postinstall`` entry in ``scripts``) on the resolved version.
-* **Rust (crates.io)** (HIGH) — a non-null ``lib_links`` on the resolved
+* **Rust (crates.io)** (MEDIUM) — a non-null ``lib_links`` on the resolved
   version, which mirrors the crate's Cargo.toml ``links`` key. Cargo *requires*
   a build script whenever ``links`` is set (a crate cannot claim a native
   link-name without one), so this is a sound, zero-false-positive proxy for
@@ -35,14 +35,23 @@ useless as an escalation trigger and would blow the CLAUDE.md §5.1 5–10%
 Stage-4 trigger-rate target along with the §5.3 LLM budget. ``links`` is the
 right signal *because* it is selective (2 of those same 12 sampled crates).
 
-**Why severities differ.** npm/Rust flags mean the package *opted in* to
-running code (a declared lifecycle hook, a declared native link). Python's
-sdist-only flag is weaker evidence of intent — it is a packaging choice, and
-most sdist-only projects are ordinary pure-Python packages whose build is
-setuptools boilerplate. So Python is MEDIUM: enough to land in the §2.2-B
-gray zone and be routed to the BehaviorAgent for intent verification, but
-never enough to fail a CI gate on its own (the ``fail_threshold`` is HIGH).
-This mirrors ``identity/typosquat.py``'s deliberate MEDIUM cap.
+**Why severities differ: intent vs. packaging fact.** Only npm's flag means the
+package *opted in* to running code — a lifecycle hook exists for no other
+purpose, and declaring one is a deliberate act. Rust's ``links`` and Python's
+sdist-only are **build-system facts, not statements of intent**: every ``-sys``
+crate declares ``links`` as routine practice, and most sdist-only projects are
+ordinary pure-Python packages whose build is setuptools boilerplate. Those two
+are therefore MEDIUM — enough to land in the §2.2-B gray zone and be routed to
+the BehaviorAgent for intent verification, but never enough to fail a CI gate
+on their own (``ScoreConfig.fail_threshold`` is HIGH). This mirrors
+``identity/typosquat.py``'s deliberate MEDIUM cap, and for the same reason:
+a signal that fires on ubiquitous, legitimate packages must not gate CI.
+
+That distinction is load-bearing, not cosmetic. ``links`` crates like
+``openssl-sys``, ``ring`` and ``libz-sys`` sit in a large share of real Rust
+dependency trees; emitting HIGH for them would fail the gate on essentially
+every Rust consumer, and because §4.3 is escalate-only the BehaviorAgent could
+never bring it back down.
 
 Per spec §2.3 the *presence* of an install/build script on a transitive
 dependency is an explicit escalation trigger — hence its own dimension and
@@ -64,9 +73,12 @@ from safesc.tools.scan.signals.registry_meta import PackageMetadata, get_package
 _METADATA_SUPPORTED = {"javascript", "rust", "python"}
 
 # Per-ecosystem severity — see the module docstring's "Why severities differ".
+# Only npm's flag denotes opted-in code execution (HIGH); `links`/sdist-only are
+# routine build-system facts on legitimate packages, so they stay MEDIUM (gray zone,
+# LLM-verified) and never fail a gate on their own.
 _SEVERITY = {
     "javascript": Severity.HIGH,
-    "rust": Severity.HIGH,
+    "rust": Severity.MEDIUM,
     "python": Severity.MEDIUM,
 }
 
