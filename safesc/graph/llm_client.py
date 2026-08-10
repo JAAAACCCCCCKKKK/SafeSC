@@ -113,9 +113,17 @@ def _require_sdk(module: str, provider: str) -> None:
     """Fail fast with an install hint if the provider SDK is absent.
 
     Uses `importlib.util.find_spec` rather than a try/import so that an ImportError raised
-    *inside* an installed-but-broken SDK is not mistaken for "not installed".
+    *inside* an installed-but-broken SDK is not mistaken for "not installed". An
+    already-imported module is treated as present up front: `find_spec` reads a cached
+    module's `__spec__` and raises `ValueError` when that attribute is `None` (as on a
+    bare `types.ModuleType`, e.g. an injected test double), so checking `sys.modules`
+    first both honours the injected module and sidesteps that error.
     """
     import importlib.util
+    import sys
+
+    if module in sys.modules:
+        return
 
     if importlib.util.find_spec(module) is None:
         extra = _PROVIDER_EXTRAS.get(provider, provider)
