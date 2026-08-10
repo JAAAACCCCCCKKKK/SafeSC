@@ -89,3 +89,54 @@ def test_legacy_not_a_directory(tmp_path, capsys):
 def test_cmd_discover_json_directly(tmp_path, capsys):
     assert commands.cmd_discover(Path(tmp_path), as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == []
+
+
+# ── --exclude ─────────────────────────────────────────────────────────────────
+
+def _make(root: Path, rel: str) -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("x")
+
+
+def test_subcommand_exclude_flag(tmp_path, capsys):
+    _make(tmp_path, "requirements.txt")
+    _make(tmp_path, "vendor/requirements.txt")
+    assert index_main.main(["discover", str(tmp_path), "--exclude", "vendor/**", "--json"]) == 0
+    found = json.loads(capsys.readouterr().out)
+    assert [f["relative_path"] for f in found] == ["requirements.txt"]
+
+
+def test_parse_subcommand_exclude_flag(tmp_path, capsys):
+    _make(tmp_path, "requirements.txt")
+    _make(tmp_path, "vendor/requirements.txt")
+    assert index_main.main(["parse", str(tmp_path), "--exclude", "vendor/**"]) == 0
+    deps = json.loads(capsys.readouterr().out)
+    assert {d["lockfile"] for d in deps} == {str(tmp_path / "requirements.txt")}
+
+
+def test_legacy_exclude_flag_is_not_mistaken_for_the_path(tmp_path, capsys):
+    # A pattern value like "vendor/**" doesn't start with "--", so the legacy parser
+    # must not treat it as the positional root path.
+    _make(tmp_path, "requirements.txt")
+    _make(tmp_path, "vendor/requirements.txt")
+    assert index_main.main([str(tmp_path), "--exclude", "vendor/**", "--json"]) == 0
+    deps = json.loads(capsys.readouterr().out)
+    assert {d["lockfile"] for d in deps} == {str(tmp_path / "requirements.txt")}
+
+
+def test_legacy_exclude_repeatable(tmp_path, capsys):
+    _make(tmp_path, "requirements.txt")
+    _make(tmp_path, "a/requirements.txt")
+    _make(tmp_path, "b/requirements.txt")
+    assert index_main.main([str(tmp_path), "--exclude", "a/**", "--exclude", "b/**", "--json"]) == 0
+    deps = json.loads(capsys.readouterr().out)
+    assert {d["lockfile"] for d in deps} == {str(tmp_path / "requirements.txt")}
+
+
+def test_cmd_discover_exclude_param_directly(tmp_path, capsys):
+    _make(tmp_path, "requirements.txt")
+    _make(tmp_path, "vendor/requirements.txt")
+    assert commands.cmd_discover(Path(tmp_path), as_json=True, exclude=["vendor/**"]) == 0
+    found = json.loads(capsys.readouterr().out)
+    assert [f["relative_path"] for f in found] == ["requirements.txt"]

@@ -1,4 +1,16 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.7: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.8: Agent Architecture)
+
+> **v2.8 (discovery exclude landed).** Landing the v2.7 attack-pattern fixtures
+> immediately surfaced a real gap: SafeSC's own self-audit workflow (`safesc.yml`,
+> target `.`) has no way to exclude paths, so it started (correctly!) flagging its own
+> deliberately-adversarial test fixtures as findings. `tools/index/core/discovery.py`'s
+> `discover()` now auto-loads a gitignore-syntax `.safescignore` file from the scanned
+> root (via the new `pathspec` dependency), plus an optional `exclude` list that layers
+> on top (CLI: repeatable `--exclude PATTERN` on `index`/`scan`/`safesc audit`/`query`;
+> Action: the `exclude` input). Because every entrypoint funnels through the one
+> `discover()` chokepoint, committing a `.safescignore` fixes all of them at once with no
+> flag required — see §2.1. This repo's own `.safescignore` now excludes
+> `tests/fixtures/attacks/`. See §9.
 
 > **v2.7 (attack-pattern fixtures landed).** The §9 item "end-to-end walkthrough vs. XZ
 > Utils / event-stream / PyTorch dependency confusion" is now **resolved for the
@@ -103,6 +115,8 @@ The v1 pipeline is preserved as a **fixed deterministic spine**. Agent discretio
 | `collect_cheap_signals` | Stage 3 | no | identity/behavior/provenance/popularity/vulnerability **static** signals |
 
 All four are LangChain `@tool` functions with strict Pydantic I/O. They must stay pure, **idempotent, and LLM-free** — idempotency matters now because a nondeterministic agent may retry them. This is v1 §4.4's "forbidden for LLM" list, now enforced *structurally* by the tool boundary rather than by convention.
+
+**Excluding paths from Stage 0 discovery** *(implemented: `tools/index/core/discovery.py`, v2.8)*: `discover()` auto-loads a gitignore-syntax `.safescignore` file from the scanned root (no flag needed — every entrypoint funnels through this one function, so committing the file fixes `index`, `scan`, and `safesc audit`/`query` at once), plus an optional caller-supplied `exclude` list (CLI: repeatable `--exclude PATTERN`; Action: the `exclude` input) that layers on top. Matching uses `pathspec` (real gitignore semantics) rather than hand-rolled globbing. This exists because SafeSC's own self-audit workflow (`.github/workflows/safesc.yml`, target `.`) has no way to know a path is deliberately adversarial test data rather than a real dependency — see the repo's own `.safescignore`, which excludes `tests/fixtures/attacks/` (the v2.7 attack-pattern fixtures, §9) for exactly this reason. `InjectedTools.discover`'s single-arg contract (`Callable[[str], list[LockfileRef]]`) is unchanged by this — `exclude` is baked in at `load_default_tools(exclude=...)` construction time, not threaded through the call, so it never touches `AuditState`/`AuditRequest` and every existing fake keeps working unmodified.
 
 ### 2.2 The Two Routing Decisions (kept distinct on purpose)
 
@@ -348,6 +362,7 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 | Credentials | BYOK (`SecretStr`) | Caller-supplied per invocation; never in state/logs/PGVector (§3.5) |
 | Scheduled maintenance | Kubernetes CronJob | PGVector GC as an external finite job — `safesc gc` (§3.4) |
 | Lockfile parsing | Syft → CycloneDX | Unchanged |
+| Path exclusion | `pathspec` | Gitignore-syntax `.safescignore` / `--exclude` matching (§2.1, v2.8) |
 | CVE source | OSV.dev | Unchanged |
 | Reports | SARIF + Markdown + JSON | Unchanged |
 | CI integration | GitHub Action + CLI | Exit code drives the gate (audit mode only) |
@@ -389,6 +404,9 @@ Resolved in v2.6 (coded):
 
 Resolved in v2.7 (coded, offline case only):
 - [x] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1) — resolved via synthetic, **inert** attack-pattern fixtures (`tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook,name_confusion,clean_baseline}/`, each with a README naming the real pattern it shadows) and `tests/test_attack_fixtures.py`. Stage 0-1 (discover/parse) and — for the identity/typosquat fixture only — Stage 3 run the real, offline production code; the two behavior fixtures use a documented stand-in for Stage 3 (see below and the test module's docstring for exactly why). From there the real `plan_gate`, a real specialist with a stubbed `SpecialistDeps.llm` (§4.2/§4.3 fusion), and the real `report_agent.score` all run unmodified. Verified to have teeth: manually raising `GateConfig.gray_floor` to `HIGH` was confirmed to empty `plan_gate`'s fan-out for all three attack fixtures (no production code touched, nothing to revert). The `clean_baseline` fixture proves the gate discriminates (no fan-out, `passed`, empty `degraded_notes`) rather than just alarming.
+
+Resolved in v2.8 (coded):
+- [x] Discovery path exclusion — landing the v2.7 fixtures broke SafeSC's own self-audit workflow (it correctly flagged its own test data: a real typosquat, `lodash@4.17.21`'s known OSV vulnerability). `discover()` now auto-loads a gitignore-syntax `.safescignore` from the scanned root, plus a layered `exclude` list from a new `--exclude` CLI flag / Action input, using `pathspec` for real gitignore semantics (§2.1). Fixed here via the repo's own `.safescignore` excluding `tests/fixtures/attacks/` — no workflow change needed, since `.safescignore` is auto-discovered.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target

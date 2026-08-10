@@ -25,7 +25,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+import pathspec
+
 from safesc.tools.index.ecosystems.base import EcosystemAdapter
+
+# Gitignore-style ignore file auto-discovered at the SCANNED ROOT (not the SafeSC
+# install) — lets a consumer repo permanently exclude paths (e.g. test fixtures that
+# deliberately look like real dependency files) from every SafeSC entrypoint
+# (`index`, `scan`, `safesc audit`/`query`) with zero flags, since they all funnel
+# through this one `discover()`. Real-world incident that motivated this: SafeSC's own
+# self-audit workflow scans "." and was tripped up by its own synthetic attack-pattern
+# test fixtures under tests/fixtures/ — see CLAUDE.md.
+DEFAULT_IGNORE_FILENAME = ".safescignore"
 
 # ── Default adapter registry ──────────────────────────────────────────────────
 # Import here so that the registry is populated by default.  Additional
@@ -97,6 +108,30 @@ def _build_pattern_map(
     return rows
 
 
+def _load_ignore_patterns(root: Path, ignore_filename: str) -> list[str]:
+    """Gitignore-syntax lines from ``root / ignore_filename``, or `[]` if absent/unreadable.
+    `pathspec` itself handles comments (`#`) and blank lines per the gitignore spec, so raw
+    lines are passed through unmodified."""
+    ignore_path = root / ignore_filename
+    if not ignore_path.is_file():
+        return []
+    try:
+        return ignore_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def _build_exclude_spec(
+    root: Path, exclude: Sequence[str], ignore_filename: str
+) -> "pathspec.PathSpec | None":
+    """Combine the auto-discovered ignore file with any caller-supplied patterns
+    (CLI-level overrides layer on top of, never replace, a committed ignore file)."""
+    patterns = [*_load_ignore_patterns(root, ignore_filename), *exclude]
+    if not patterns:
+        return None
+    return pathspec.PathSpec.from_lines("gitignore", patterns)
+
+
 def _matches_any(filename: str, pattern_map: list[tuple[str, str, EcosystemAdapter]]):
     """Yield ``(glob, ecosystem_name)`` for every pattern that matches *filename*.
 
@@ -118,6 +153,8 @@ def discover(
     *,
     extra_adapters: Sequence[EcosystemAdapter] = (),
     prune_dirs: frozenset[str] = _PRUNE_DIRS,
+    exclude: Sequence[str] = (),
+    ignore_filename: str = DEFAULT_IGNORE_FILENAME,
 ) -> list[DiscoveredFile]:
     """Walk *root* and return every dependency file found.
 
@@ -129,7 +166,22 @@ def discover(
         Additional ecosystem adapters to consider beyond the built-in set.
         Useful for testing or for ecosystems not yet included by default.
     prune_dirs:
-        Directory names that are skipped entirely during the walk.
+        Directory names (by bare name, anywhere in the tree) that are skipped
+        entirely during the walk — generic build/VCS/cache junk (``node_modules``,
+        ``.git``, ``dist``, ...), the same everywhere and not user-configurable.
+    exclude:
+        Gitignore-syntax patterns (matched against the path relative to *root*,
+        POSIX-separated) to additionally exclude, layered on top of any patterns
+        found in ``root / ignore_filename``. This is the caller-supplied override
+        (e.g. a CLI ``--exclude`` flag); it augments rather than replaces a
+        committed ignore file.
+    ignore_filename:
+        Name of the gitignore-syntax file auto-discovered at *root*, if present.
+        Defaults to ``.safescignore`` — lets a repo permanently exclude paths
+        (e.g. test fixtures that deliberately look like real dependency files)
+        from every SafeSC entrypoint with zero flags, since discovery is the one
+        chokepoint every entrypoint (``index``, ``scan``, ``safesc audit``/``query``)
+        funnels through.
 
     Returns
     -------
@@ -147,6 +199,7 @@ def discover(
 
     adapters = _DEFAULT_ADAPTERS + list(extra_adapters)
     pattern_map = _build_pattern_map(adapters)
+    spec = _build_exclude_spec(root, exclude, ignore_filename)
 
     found: list[DiscoveredFile] = []
 
@@ -154,7 +207,22 @@ def discover(
         # Prune unwanted directories in-place so os.walk doesn't descend.
         dirnames[:] = [d for d in dirnames if d not in prune_dirs]
 
+        if spec is not None:
+            # Prune whole subtrees the ignore spec matches (mirrors gitignore's own
+            # directory pruning) instead of only filtering individual files, so a
+            # pattern like `tests/fixtures/**` also skips walking into that subtree.
+            kept: list[str] = []
+            for d in dirnames:
+                rel_dir = (dirpath / d).relative_to(root).as_posix() + "/"
+                if not spec.match_file(rel_dir):
+                    kept.append(d)
+            dirnames[:] = kept
+
         for filename in filenames:
+            if spec is not None:
+                rel_file = (dirpath / filename).relative_to(root).as_posix()
+                if spec.match_file(rel_file):
+                    continue
             for glob, ecosystem_name in _matches_any(filename, pattern_map):
                 found.append(
                     DiscoveredFile(

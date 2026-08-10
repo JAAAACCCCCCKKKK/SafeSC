@@ -26,6 +26,15 @@ inputs:
     description: "Override the LLM base URL (proxy / gateway / Bedrock / Azure / OpenAI-compatible endpoint)."
     required: false
     default: ""
+  exclude:
+    description: >-
+      Gitignore-syntax patterns to exclude from discovery, one per line. Layers on top
+      of any `.safescignore` file committed at the target root (which is auto-discovered
+      with no input needed) — use this input for one-off/CI-level excludes instead.
+      Useful for excluding paths that deliberately look like real dependency files
+      (e.g. test fixtures for a supply-chain-security tool auditing its own repo).
+    required: false
+    default: ""
   report-dir:
     description: "Directory to write JSON / Markdown / SARIF report artifacts."
     required: false
@@ -127,9 +136,17 @@ runs:
         SAFESC_LLM_BASE_URL: ${{ inputs.llm-base-url }}
       run: |
         set +e
+        # One --exclude PATTERN pair per non-blank line of the `exclude` input.
+        exclude_args=()
+        while IFS= read -r pattern; do
+          if [ -n "$pattern" ]; then
+            exclude_args+=(--exclude "$pattern")
+          fi
+        done <<< "${{ inputs.exclude }}"
         safesc audit "${{ inputs.target }}" \
           --report-dir "${{ inputs.report-dir }}" \
-          --format "${{ inputs.format }}"
+          --format "${{ inputs.format }}" \
+          "${exclude_args[@]}"
         code=$?
         # Defer the gate's exit code so the report-publishing steps below still run;
         # a later step re-applies it so the check still fails on a critical finding.

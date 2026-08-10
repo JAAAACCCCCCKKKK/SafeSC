@@ -87,13 +87,27 @@ def main(argv=None, *, tools=None, session=None, memory=None, config=None) -> in
                        choices=["all", "json", "markdown", "md", "sarif"],
                        help="report format to write (default: all)")
 
+    def _add_exclude_arg(p):
+        # Declared here purely so `--help` documents it and `parse_args` doesn't reject
+        # it as unrecognised; the value itself is already consumed by
+        # `bootstrap._preparse_exclude` and baked into `tools` before this parser ever
+        # runs (tools are constructed before this function is called — see
+        # entrypoints/bootstrap.py). Not read from `args` below.
+        p.add_argument(
+            "--exclude", action="append", metavar="PATTERN", default=None,
+            help="gitignore-syntax pattern to exclude (repeatable), layered on top of "
+                 "any .safescignore file at the target root",
+        )
+
     p_audit = sub.add_parser("audit", help="full-repo audit (gates CI)")
     p_audit.add_argument("target", nargs="?", default=".", help="repo path / git URL / lockfile")
     _add_report_args(p_audit)
+    _add_exclude_arg(p_audit)
 
     p_query = sub.add_parser("query", help="single-package investigation (evidence only)")
     p_query.add_argument("target", help="package spec, e.g. npm:left-pad@1.3.0")
     _add_report_args(p_query)
+    _add_exclude_arg(p_query)
 
     sub.add_parser("gc", help="PGVector garbage collection (CronJob entry, §3.4)")
 

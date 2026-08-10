@@ -30,6 +30,7 @@ dependencies = [
     "pyyaml>=6",       # pnpm-lock.yaml parsing (Stage 1)
     "aiohttp>=3.9",    # async HTTP for Stage 2 hash verification
     "packaging>=21",   # PEP 440 version normalisation (Stage 3 provenance version match)
+    "pathspec>=0.12",  # gitignore-style .safescignore / --exclude matching (Stage 0)
 ]
 
 [project.optional-dependencies]

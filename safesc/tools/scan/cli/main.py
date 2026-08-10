@@ -11,6 +11,10 @@ Backward-compatible flag interface (unchanged behaviour):
     scan --signals <path>   Stage 3 cheap signals (JSON)
 
 With no subcommand or flag, ``scan <path>`` runs Stage 2 verification.
+
+Both interfaces accept a repeatable ``--exclude PATTERN`` (gitignore syntax, matched
+relative to <path>), layered on top of any ``.safescignore`` file auto-discovered at
+<path> — see `safesc.tools.index.core.discovery.discover`.
 """
 
 from __future__ import annotations
@@ -53,17 +57,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--signals", action="store_true",
         help="Stage 3: collect cheap trust signals over every dependency (JSON).",
     )
+    parser.add_argument(
+        "--exclude", action="append", metavar="PATTERN", default=None,
+        help="Gitignore-syntax pattern to exclude (repeatable), layered on top of any "
+             ".safescignore file at <path>.",
+    )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     p_verify = sub.add_parser(
         "verify", help="Stage 2: verify lockfile hashes against registry hashes (JSON)."
     )
     p_verify.add_argument("path", nargs="?", default=".", help="Repository root (default: .)")
+    p_verify.add_argument(
+        "--exclude", action="append", metavar="PATTERN", default=None,
+        help="Gitignore-syntax pattern to exclude (repeatable).",
+    )
 
     p_signals = sub.add_parser(
         "signals", help="Stage 3: collect cheap trust signals over every dependency (JSON)."
     )
     p_signals.add_argument("path", nargs="?", default=".", help="Repository root (default: .)")
+    p_signals.add_argument(
+        "--exclude", action="append", metavar="PATTERN", default=None,
+        help="Gitignore-syntax pattern to exclude (repeatable).",
+    )
 
     return parser
 
@@ -72,24 +89,42 @@ def _run_subcommand(args: list[str]) -> int:
     parser = _build_parser()
     ns = parser.parse_args(args)
     root = Path(ns.path)
+    exclude = ns.exclude or []
 
     if ns.command == "verify":
-        return cmd_verify(root)
+        return cmd_verify(root, exclude=exclude)
     if ns.command == "signals":
-        return cmd_signals(root)
+        return cmd_signals(root, exclude=exclude)
 
     parser.print_help()
     return 0
 
 
+def _extract_exclude(args: list[str]) -> tuple[list[str], list[str]]:
+    """Pull `--exclude PATTERN` pairs out of the legacy flag interface's args (which
+    otherwise treats any non-`--`-prefixed token as the positional path)."""
+    patterns: list[str] = []
+    remaining: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--exclude" and i + 1 < len(args):
+            patterns.append(args[i + 1])
+            i += 2
+            continue
+        remaining.append(args[i])
+        i += 1
+    return patterns, remaining
+
+
 def _run_legacy(args: list[str]) -> int:
     """Preserve the original flag-based behaviour verbatim (default: verify)."""
+    exclude, args = _extract_exclude(args)
     run_signals = "--signals" in args
     positional = [a for a in args if not a.startswith("--")]
     root = Path(positional[0]) if positional else Path.cwd()
 
     try:
-        files = discover(root)
+        files = discover(root, exclude=exclude)
     except NotADirectoryError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

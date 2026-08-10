@@ -10,21 +10,23 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Sequence
 
 from safesc.tools.index.core.discovery import discover
 from safesc.tools.index.core.normalizer import parse_lockfiles
 
 
-def cmd_verify(root: Path) -> int:
+def cmd_verify(root: Path, *, exclude: Sequence[str] = ()) -> int:
     """Stage 2 — verify lockfile hashes against registry hashes.
 
     Exit code is 1 when any result is ``critical`` (a hash mismatch), matching
-    the pipeline gate defined for this stage.
+    the pipeline gate defined for this stage. `exclude` layers on top of any
+    ``.safescignore`` file found at *root* — see `discovery.discover`.
     """
     from safesc.tools.scan.signals.provenance.verifier import run_verification
 
     try:
-        files = discover(root)
+        files = discover(root, exclude=exclude)
     except NotADirectoryError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -37,7 +39,7 @@ def cmd_verify(root: Path) -> int:
     return 1 if has_critical else 0
 
 
-def cmd_signals(root: Path) -> int:
+def cmd_signals(root: Path, *, exclude: Sequence[str] = ()) -> int:
     """Stage 3 — collect cheap signals over every dependency.
 
     Stage 3 only emits evidence; CI gating is the scorer's job (a later stage),
@@ -46,7 +48,7 @@ def cmd_signals(root: Path) -> int:
     from safesc.tools.scan.signals.collector import run_collection
 
     try:
-        files = discover(root)
+        files = discover(root, exclude=exclude)
     except NotADirectoryError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

@@ -131,3 +131,41 @@ def test_bootstrap_main_gc_end_to_end(capsys):
     # store-free runtime + gc subcommand needs no LLM key and no external stores.
     assert bootstrap.main(["gc"]) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+# ---- --exclude plumbing ----
+
+
+def test_preparse_exclude_extracts_repeated_flags():
+    argv = ["audit", ".", "--exclude", "a/**", "--report-dir", "out", "--exclude", "b/**"]
+    assert bootstrap._preparse_exclude(argv) == ["a/**", "b/**"]
+
+
+def test_preparse_exclude_empty_when_absent():
+    assert bootstrap._preparse_exclude(["audit", "."]) == []
+
+
+def test_build_local_runtime_bakes_in_exclude(tmp_path):
+    # exclude is a construction-time parameter of load_default_tools (via
+    # build_local_runtime), not a per-call one — see graph/spine.py's docstring.
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "requirements.txt").write_text("requests==2.31.0\n")
+
+    tools, _session, _memory = bootstrap.build_local_runtime(exclude=["vendor/**"])
+    lockfiles = tools.discover(str(tmp_path))
+    assert [str(lf.path) for lf in lockfiles] == [str(tmp_path / "requirements.txt")]
+
+
+def test_bootstrap_main_exclude_reaches_discovery(monkeypatch, capsys, _llm_env):
+    # Full plumbing: --exclude on `safesc audit ...` is pre-parsed in bootstrap.main
+    # before graph_build.run is ever called, and reaches the real discovery seam.
+    captured = {}
+
+    def _fake_run(req, *, tools, **kwargs):
+        captured["tools"] = tools
+        return _fake_result()
+
+    monkeypatch.setattr(cli.graph_build, "run", _fake_run)
+    assert bootstrap.main(["audit", ".", "--exclude", "everything/**"]) == 0
+    assert callable(captured["tools"].discover)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -149,10 +149,18 @@ def _hash_result_to_graph(r) -> Signal:
     )
 
 
-def load_default_tools() -> InjectedTools:
+def load_default_tools(*, exclude: Sequence[str] = ()) -> InjectedTools:
     """Wire the spine's four seams to the real Stage 0–3 code, kept in one place so the
     spine never imports those modules directly (§6.1.5). Each seam is a thin per-dep
-    adapter that calls the real implementation and translates to `graph.state.Signal`."""
+    adapter that calls the real implementation and translates to `graph.state.Signal`.
+
+    `exclude` (gitignore-syntax patterns) is baked into the discovery seam at
+    construction time and layers on top of any ``.safescignore`` file auto-discovered at
+    the audited target — see `tools.index.core.discovery.discover`. It is a construction
+    parameter rather than a per-call one so `InjectedTools.discover`'s single-arg
+    contract (`Callable[[str], list[LockfileRef]]`) never changes — every existing fake
+    built as `InjectedTools(discover=lambda target: ...)` keeps working unmodified.
+    """
     from pathlib import Path
 
     from safesc.tools.index.core import discovery, normalizer  # type: ignore
@@ -161,7 +169,7 @@ def load_default_tools() -> InjectedTools:
     from safesc.tools.scan.signals.provenance import verifier  # type: ignore
 
     def discover(target: str) -> list[LockfileRef]:  # Stage 0
-        found = discovery.discover(Path(target))
+        found = discovery.discover(Path(target), exclude=exclude)
         return [LockfileRef(path=str(f.path), ecosystem=f.ecosystem) for f in found]
 
     def parse(lockfiles: list[LockfileRef]) -> list[Dependency]:  # Stage 1

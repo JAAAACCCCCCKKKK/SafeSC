@@ -124,3 +124,58 @@ def test_finds_lowercase_cargo_lock(tmp_path: Path) -> None:
     make_tree(tmp_path, ["cargo.lock"])
     results = discover(tmp_path)
     assert any(f.ecosystem == "rust" for f in results)
+
+
+# ── .safescignore / exclude ─────────────────────────────────────────────────────
+
+
+def test_safescignore_excludes_matching_directory(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock", "tests/fixtures/attacks/x/requirements.txt"])
+    (tmp_path / ".safescignore").write_text("tests/fixtures/**\n")
+    results = discover(tmp_path)
+    names = {f.path.name for f in results}
+    assert names == {"uv.lock"}
+
+
+def test_safescignore_comments_and_blank_lines_are_ignored(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock", "vendor/requirements.txt"])
+    (tmp_path / ".safescignore").write_text("# a comment\n\nvendor/\n")
+    results = discover(tmp_path)
+    assert {f.path.name for f in results} == {"uv.lock"}
+
+
+def test_no_safescignore_file_changes_nothing(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock"])
+    assert {f.path.name for f in discover(tmp_path)} == {"uv.lock"}
+
+
+def test_exclude_param_layers_on_top_of_safescignore(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock", "a/requirements.txt", "b/requirements.txt"])
+    (tmp_path / ".safescignore").write_text("a/**\n")
+    results = discover(tmp_path, exclude=["b/**"])
+    assert {f.path.name for f in results} == {"uv.lock"}
+
+
+def test_exclude_param_works_with_no_safescignore_file(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock", "vendor/requirements.txt"])
+    results = discover(tmp_path, exclude=["vendor/**"])
+    assert {f.path.name for f in results} == {"uv.lock"}
+
+
+def test_exclude_prunes_the_whole_subtree_not_just_matched_files(tmp_path: Path) -> None:
+    # A deeply-nested file under an excluded directory must never be walked at all,
+    # not merely filtered out after being found (verifies directory-level pruning).
+    make_tree(tmp_path, ["uv.lock", "ignored/deep/nested/path/requirements.txt"])
+    results = discover(tmp_path, exclude=["ignored/**"])
+    assert {f.path.name for f in results} == {"uv.lock"}
+
+
+def test_custom_ignore_filename(tmp_path: Path) -> None:
+    make_tree(tmp_path, ["uv.lock", "vendor/requirements.txt"])
+    (tmp_path / "custom-ignore").write_text("vendor/**\n")
+    results = discover(tmp_path, ignore_filename="custom-ignore")
+    assert {f.path.name for f in results} == {"uv.lock"}
+    # the default filename is not consulted when a custom one is given
+    (tmp_path / ".safescignore").write_text("uv.lock\n")
+    results = discover(tmp_path, ignore_filename="custom-ignore")
+    assert {f.path.name for f in results} == {"uv.lock"}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Sequence
 
 from safesc.tools.index.core.discovery import DiscoveredFile, discover, print_discovered
 from safesc.tools.index.core.normalizer import parse_lockfiles, to_json
@@ -26,11 +27,15 @@ def _discovered_to_dict(f: DiscoveredFile, root: Path) -> dict:
     }
 
 
-def cmd_discover(root: Path, *, as_json: bool = False) -> int:
-    """Stage 0 — discover dependency lockfiles under *root*."""
+def cmd_discover(root: Path, *, as_json: bool = False, exclude: Sequence[str] = ()) -> int:
+    """Stage 0 — discover dependency lockfiles under *root*.
+
+    `exclude` (gitignore-syntax patterns) layers on top of any ``.safescignore``
+    file found at *root* — see `discovery.discover`.
+    """
     root = root.resolve()
     try:
-        files = discover(root)
+        files = discover(root, exclude=exclude)
     except NotADirectoryError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -42,10 +47,10 @@ def cmd_discover(root: Path, *, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_parse(root: Path) -> int:
+def cmd_parse(root: Path, *, exclude: Sequence[str] = ()) -> int:
     """Stage 1 — parse discovered lockfiles into a normalised dependency array."""
     try:
-        files = discover(root)
+        files = discover(root, exclude=exclude)
     except NotADirectoryError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

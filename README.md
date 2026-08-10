@@ -83,6 +83,7 @@ To pin a specific **model** or route to a custom **endpoint**, add the optional 
 | `llm-model` | | provider default | Model id, e.g. `claude-sonnet-5`, `gpt-4o`. Blank = provider default. |
 | `llm-base-url` | | — | Override the LLM base URL (proxy / gateway / Bedrock / Azure / OpenAI-compatible). |
 | `target` | | `.` | Repo path, lockfile, or git URL to audit. |
+| `exclude` | | — | Gitignore-syntax patterns to exclude from discovery, one per line. See [Excluding paths](#excluding-paths). |
 | `format` | | `all` | Report format(s): `all` \| `json` \| `markdown` \| `sarif`. |
 | `report-dir` | | `safesc-reports` | Directory to write JSON / Markdown / SARIF artifacts. |
 | `python-version` | | `3.12` | Python version used to run SafeSC. |
@@ -177,6 +178,32 @@ parse) and `scan` (verify / signals).
 ## Supported ecosystems
 
 Python (uv / poetry / pip), npm / pnpm, Cargo (Rust), Go modules, and Maven / Gradle (Java).
+
+## Excluding paths
+
+SafeSC discovers dependency files by walking the target directory. To permanently
+exclude paths (e.g. test fixtures, vendored copies, generated directories), add a
+`.safescignore` file at the target root — gitignore syntax, auto-discovered with no
+flag needed:
+
+```
+# .safescignore
+tests/fixtures/**
+vendor/
+```
+
+For a one-off exclusion without committing a file, every entrypoint also accepts a
+repeatable `--exclude PATTERN` flag, which layers on top of (never replaces) a
+`.safescignore` file:
+
+```bash
+safesc audit . --exclude "tests/fixtures/**"
+index discover . --exclude "vendor/**"
+scan signals . --exclude "vendor/**"
+```
+
+The GitHub Action exposes the same thing as the `exclude` input (one pattern per line).
+Patterns are gitignore syntax, matched against the path relative to the scanned root.
 
 ## Reports
 

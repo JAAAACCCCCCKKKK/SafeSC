@@ -20,9 +20,11 @@ the concrete tool construction so importing the library surface stays side-effec
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
+from typing import Sequence
 
 from safesc.entrypoints.cli import main as cli_main
 from safesc.graph.harness.session_manager import new_ulid
@@ -49,15 +51,35 @@ class LocalSession:
         return new_ulid()
 
 
-def build_local_runtime():
+def build_local_runtime(*, exclude: Sequence[str] = ()):
     """Wire the four Stage 0–3 seams to the real frozen tools (§6.1.5).
 
     Returns the ``(tools, session, memory)`` triple that ``cli.main()`` expects. ``memory``
-    is ``None`` — this is the store-free tier-2 path.
+    is ``None`` — this is the store-free tier-2 path. `exclude` (gitignore-syntax
+    patterns, e.g. from ``--exclude``) is baked into the discovery seam at construction
+    time — see `graph.spine.load_default_tools`.
     """
     from safesc.graph.spine import load_default_tools
 
-    return load_default_tools(), LocalSession(), None
+    return load_default_tools(exclude=exclude), LocalSession(), None
+
+
+def _preparse_exclude(argv: Sequence[str]) -> list[str]:
+    """Pull `--exclude PATTERN` occurrences out of argv *before* `cli_main`'s full parse.
+
+    Needed because `tools` (which bakes exclude patterns into the discovery closure, see
+    `build_local_runtime`) must be constructed before `cli_main` runs its own
+    `parse_args` — so this repo's tool construction can't simply wait for that later,
+    stricter parse. `parse_known_args` on a minimal, `add_help=False` parser ignores
+    every other flag/subcommand (`audit`/`query`/`gc`, `--report-dir`, ...) rather than
+    erroring on them; `cli_main`'s parser separately declares `--exclude` too, purely so
+    `--help` documents it and its own `parse_args` doesn't reject the (harmless, already
+    consumed) flag as unrecognised.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--exclude", action="append", default=None)
+    ns, _unknown = parser.parse_known_args(list(argv))
+    return ns.exclude or []
 
 
 def _explain_missing_extra(module_name: str) -> None:
@@ -121,8 +143,13 @@ def main(argv=None) -> int:
             return 2
         raise
 
+    # tools must be built (with --exclude baked into the discovery closure, if given)
+    # before cli_main's own parse_args runs — see _preparse_exclude's docstring.
+    resolved_argv = argv if argv is not None else sys.argv[1:]
+    exclude = _preparse_exclude(resolved_argv)
+
     try:
-        tools, session, memory = build_local_runtime()
+        tools, session, memory = build_local_runtime(exclude=exclude)
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
         if exc.name and exc.name.split(".")[0] in _OPTIONAL_MODULE_EXTRAS:
             _explain_missing_extra(exc.name.split(".")[0])
