@@ -1,7 +1,8 @@
 name: "SafeSC dependency audit"
 description: >-
   SafeSC dependency-audit CI gate: deterministic supply-chain signals (Stages 0–3) plus
-  LLM deep analysis (Stage 4). Bring-your-own LLM key; no Redis or Postgres required.
+  LLM deep analysis (Stage 4). Bring-your-own LLM key; no Redis or Postgres required,
+  but both can be attached for caching, fleet-wide rate limiting and prior-finding grounding.
 author: "SafeSC"
 branding:
   icon: "shield"
@@ -35,6 +36,57 @@ inputs:
       (e.g. test fixtures for a supply-chain-security tool auditing its own repo).
     required: false
     default: ""
+  # --- optional memory layer (CLAUDE.md §3.6) ----------------------------------------
+  # All blank by default = the store-free tier, which is what GitHub-hosted runners want.
+  # These matter when SafeSC can reach a store that OUTLIVES the job: a managed Redis /
+  # Postgres, or a self-hosted runner beside your own instances. A `services:` container
+  # is NOT useful here — it is recreated per job, so the cache starts empty, checkpoints
+  # are unreachable and rate limiting is scoped to a single run.
+  redis-url:
+    description: >-
+      Redis URL. Enables checkpointing (for `resume`), fleet-wide per-registry rate
+      limiting, the 7-day cross-run cheap-signal cache, and exact-hash recall of prior
+      verdicts. Needs no second API key. Pass a repository secret.
+    required: false
+    default: ""
+  pgvector-dsn:
+    description: >-
+      Postgres/pgvector DSN. Adds similarity search over prior findings and the
+      known-attack fingerprint corpus. Requires embedding-api-key. Pass a secret.
+    required: false
+    default: ""
+  embedding-api-key:
+    description: "BYOK embedding-provider key. Required whenever pgvector-dsn is set. Pass a secret."
+    required: false
+    default: ""
+  embedding-model:
+    description: "Embedding model id (blank = voyage-3-large). Must match embedding-dim."
+    required: false
+    default: ""
+  embedding-base-url:
+    description: "Embedding provider base URL (blank = Voyage; set for an OpenAI-compatible endpoint)."
+    required: false
+    default: ""
+  embedding-dim:
+    description: >-
+      pgvector column width. MUST match the embedding model — changing it means a
+      re-index, not a hot swap. Blank = 1024 (voyage-3-large).
+    required: false
+    default: ""
+  memory-strict:
+    description: >-
+      Fail the run when a configured store is unreachable, instead of warning and
+      auditing store-free. Off by default because memory can only escalate a verdict,
+      never lower one, so its absence is always safe.
+    required: false
+    default: "false"
+  store-init:
+    description: >-
+      Run `safesc store init` before auditing to create the pgvector schema. Off by
+      default: it needs DDL privileges, and the schema only has to be created once.
+    required: false
+    default: "false"
+
   report-dir:
     description: "Directory to write JSON / Markdown / SARIF report artifacts."
     required: false
@@ -116,14 +168,37 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install SafeSC (tier-2, no external stores)
+    # Tier-2 by default (CLAUDE.md §3.6) — no Redis, no Postgres, no checkpointer, which
+    # is what a GitHub-hosted runner wants. The `memory` extra (redis / psycopg / voyageai /
+    # langgraph-checkpoint-redis) is pulled ONLY when a store is actually configured, so
+    # consumers who do not use one never pay for its install.
+    - name: Install SafeSC
       shell: bash
+      env:
+        REDIS_URL: ${{ inputs.redis-url }}
+        PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
       run: |
         python -m pip install --upgrade pip
-        # Install SafeSC from this action's own checkout, with the orchestration 'agent'
-        # extra plus both built-in provider SDKs (the consumer picks one via llm-provider;
-        # there is no default provider, BYOK — §3.5). Unused SDKs are never imported.
-        python -m pip install "${GITHUB_ACTION_PATH}[agent,anthropic,openai]"
+        # The orchestration 'agent' extra plus both built-in provider SDKs (the consumer
+        # picks one via llm-provider; there is no default provider, BYOK — §3.5). Unused
+        # SDKs are never imported.
+        extras="agent,anthropic,openai"
+        if [ -n "$REDIS_URL" ] || [ -n "$PGVECTOR_DSN" ]; then
+          extras="${extras},memory"
+          echo "SafeSC: tier-3 runtime (memory extra installed)."
+        fi
+        python -m pip install "${GITHUB_ACTION_PATH}[${extras}]"
+
+    # Opt-in, and skipped entirely without a DSN. Idempotent (CREATE ... IF NOT EXISTS),
+    # but it needs DDL privileges, so an audit must never do it implicitly.
+    - name: Initialise pgvector schema
+      if: inputs.store-init == 'true' && inputs.pgvector-dsn != ''
+      shell: bash
+      env:
+        SAFESC_PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
+        SAFESC_EMBEDDING_API_KEY: ${{ inputs.embedding-api-key }}
+        SAFESC_EMBEDDING_DIM: ${{ inputs.embedding-dim }}
+      run: safesc store init
 
     - name: Run safesc audit
       id: run
@@ -134,6 +209,23 @@ runs:
         SAFESC_LLM_PROVIDER: ${{ inputs.llm-provider }}
         SAFESC_LLM_MODEL: ${{ inputs.llm-model }}
         SAFESC_LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        # Memory layer (§3.6). Blank values are ignored by select_runtime, so leaving these
+        # unset is exactly the tier-2 path. A configured-but-unreachable store degrades with
+        # a warning unless memory-strict is on.
+        SAFESC_REDIS_URL: ${{ inputs.redis-url }}
+        SAFESC_PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
+        SAFESC_EMBEDDING_API_KEY: ${{ inputs.embedding-api-key }}
+        SAFESC_EMBEDDING_MODEL: ${{ inputs.embedding-model }}
+        SAFESC_EMBEDDING_BASE_URL: ${{ inputs.embedding-base-url }}
+        SAFESC_EMBEDDING_DIM: ${{ inputs.embedding-dim }}
+        SAFESC_MEMORY_STRICT: ${{ inputs.memory-strict }}
+        # Values reach the script through the environment, never by `${{ }}` interpolation
+        # into the `run:` body — a DSN, key or pattern containing shell metacharacters would
+        # otherwise be executed rather than passed.
+        EXCLUDE_PATTERNS: ${{ inputs.exclude }}
+        TARGET: ${{ inputs.target }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+        REPORT_FORMAT: ${{ inputs.format }}
       run: |
         set +e
         # One --exclude PATTERN pair per non-blank line of the `exclude` input.
@@ -142,17 +234,17 @@ runs:
           if [ -n "$pattern" ]; then
             exclude_args+=(--exclude "$pattern")
           fi
-        done <<< "${{ inputs.exclude }}"
-        safesc audit "${{ inputs.target }}" \
-          --report-dir "${{ inputs.report-dir }}" \
-          --format "${{ inputs.format }}" \
+        done <<< "$EXCLUDE_PATTERNS"
+        safesc audit "$TARGET" \
+          --report-dir "$REPORT_DIR" \
+          --format "$REPORT_FORMAT" \
           "${exclude_args[@]}"
         code=$?
         # Defer the gate's exit code so the report-publishing steps below still run;
         # a later step re-applies it so the check still fails on a critical finding.
         echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
         # Was a SARIF file actually produced? (only when format is all|sarif)
-        if [ -f "${{ inputs.report-dir }}/safesc-report.sarif" ]; then
+        if [ -f "$REPORT_DIR/safesc-report.sarif" ]; then
           echo "sarif-produced=true" >> "$GITHUB_OUTPUT"
         else
           echo "sarif-produced=false" >> "$GITHUB_OUTPUT"

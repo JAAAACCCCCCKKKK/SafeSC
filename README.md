@@ -90,6 +90,13 @@ To pin a specific **model** or route to a custom **endpoint**, add the optional 
 | `upload-sarif` | | `true` | Upload the SARIF report to GitHub code scanning. |
 | `upload-artifact` | | `true` | Archive `report-dir` as a build artifact. |
 | `artifact-name` | | `safesc-reports` | Name for the archived artifact. |
+| `redis-url` | | — | Enables checkpointing, fleet-wide rate limiting, the signal cache and prior-verdict recall. See [Optional memory layer](#optional-memory-layer). |
+| `pgvector-dsn` | | — | Adds similarity search + fingerprint grounding. Requires `embedding-api-key`. |
+| `embedding-api-key` | | — | BYOK embedding key. Required whenever `pgvector-dsn` is set. Pass a secret. |
+| `embedding-model` / `embedding-base-url` | | Voyage | Embedding provider overrides. |
+| `embedding-dim` | | `1024` | pgvector column width. **Must** match the embedding model. |
+| `memory-strict` | | `false` | Fail if a configured store is unreachable, instead of auditing store-free. |
+| `store-init` | | `false` | Run `safesc store init` before auditing (needs DDL privileges; only needed once). |
 
 **Output:** `exit-code` — `0` = gate pass, `1` = gate fail on a critical finding.
 
@@ -146,6 +153,10 @@ safesc audit . --report-dir safesc-reports --format all
 safesc query npm:left-pad@1.3.0
 ```
 
+Store-backed deployments get three more subcommands — `safesc store init`,
+`safesc fingerprint load`, and `safesc gc` — plus `--resume`; see
+[Optional memory layer](#optional-memory-layer).
+
 Use a different provider/model entirely through the environment:
 
 ```bash
@@ -172,6 +183,89 @@ parse) and `scan` (verify / signals).
 | `SAFESC_LLM_BASE_URL` | | Override the LLM base URL. |
 | `SAFESC_EMBEDDING_API_KEY` | | Only if the optional memory layer is enabled. |
 | `SAFESC_EMBEDDING_BASE_URL` / `SAFESC_EMBEDDING_MODEL` | | Embedding provider overrides. |
+| `SAFESC_REDIS_URL` | | Enables the memory layer's short-term half — see below. |
+| `SAFESC_PGVECTOR_DSN` | | Enables the long-term half (also needs an embedding key). |
+| `SAFESC_EMBEDDING_DIM` | | Vector column width. **Must** match your embedding model. |
+| `SAFESC_MEMORY_STRICT` | | `1` = fail if a configured store is unreachable, instead of degrading. |
+| `SAFESC_HOST_CONCURRENCY` / `SAFESC_HOT_TTL_S` | | Per-registry concurrency (`10`) and cache TTL (7 days). |
+| `SAFESC_LOG_LEVEL` | | SafeSC's own log verbosity (default `INFO`; `DEBUG` traces LLM requests). |
+| `SAFESC_DEEP_CACHE` | | Directory for Stage-4 clone/extract scratch data (default: system temp). |
+
+---
+
+## Optional memory layer
+
+SafeSC runs fine with no external stores, and that is the default — a CI audit is a single
+finite run. Attaching a store makes audits **faster, politer to registries, and better
+grounded**. It cannot make them more permissive; see the invariant below.
+
+| Store | What you get |
+|---|---|
+| **Redis** (`SAFESC_REDIS_URL`) | Checkpointing, so `safesc audit . --resume` reattaches to an interrupted run · fleet-wide per-registry rate limiting shared across concurrent audits · a 7-day cross-run cache of the cheap signals that cannot change for a pinned `name@version` · exact-hash recall of prior verdicts. **Needs no second API key.** |
+| **Postgres + pgvector** (`SAFESC_PGVECTOR_DSN`) | Adds *similarity* search — behaviourally related prior findings, and a curated known-attack fingerprint corpus — as grounding for Stage-4 LLM analysis. Requires an embedding key. |
+
+Either half works alone. Redis-only is the cheapest useful configuration: everything
+except similarity search, with one store and no extra key.
+
+```bash
+pip install "safesc[agent,anthropic,memory]"
+
+export SAFESC_REDIS_URL=redis://localhost:6379/0
+export SAFESC_PGVECTOR_DSN=postgresql://user:pw@localhost:5432/safesc   # optional
+export SAFESC_EMBEDDING_API_KEY=pa-...                                  # with pgvector only
+
+safesc store init                             # once: create the pgvector schema
+safesc fingerprint load                       # once: ingest the shipped attack corpus
+safesc audit .                                # now cached + grounded
+safesc gc                                     # periodically: retention sweep (CronJob)
+```
+
+**This can only ever make SafeSC stricter, never more permissive.** Retrieved memory
+reaches the LLM as prior context that may raise concern but is structurally incapable of
+lowering a verdict — it is never merged into the signal set, and a specialist that agrees
+with a prior finding must re-derive it from current evidence. That is why a configured but
+unreachable store only prints a warning and audits without it. Set `SAFESC_MEMORY_STRICT=1`
+if you would rather that be a hard error. Only `safesc fingerprint load` writes
+fingerprints — an audit run cannot — and the corpus lives in version control under
+`fingerprints/`.
+
+### Using it from CI
+
+The store has to **outlive the job**. A `services:` container does not: it is recreated per
+job, so the cache starts empty every run, checkpoints are unreachable, and rate limiting is
+scoped to a single audit — you pay for the store and get none of the four benefits. Use a
+**managed store** reachable over the network (from GitHub-hosted runners) or a
+**self-hosted runner** beside your own instances.
+
+```yaml
+- uses: JAAAACCCCCCKKKK/SafeSC@v1
+  with:
+    llm-api-key:       ${{ secrets.SAFESC_LLM_API_KEY }}
+    llm-provider:      anthropic
+    redis-url:         ${{ secrets.SAFESC_REDIS_URL }}
+    pgvector-dsn:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
+    embedding-api-key: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+```
+
+The `memory` extra is installed only when one of those is set, so consumers who do not use
+a store pay nothing for it. Gating behaviour is unchanged: the audit still exits `1` on a
+failing gate.
+
+Keep the one-time setup out of the audit workflow — re-ingesting the fingerprint corpus on
+every run just burns embedding calls rewriting identical rows. Run it once (or on a
+schedule) via `workflow_dispatch`:
+
+```yaml
+- run: |
+    pip install "safesc[agent,anthropic,memory]"
+    safesc store init
+    safesc fingerprint load
+  env:
+    SAFESC_PGVECTOR_DSN:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
+    SAFESC_EMBEDDING_API_KEY: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+```
+
+`safesc gc` belongs on a nightly cron (or a Kubernetes CronJob), never inside an audit.
 
 ---
 
@@ -217,7 +311,7 @@ Every run can emit **SARIF** (for GitHub code scanning), **Markdown** (human-rea
 | `agent` | LangGraph | CI-tier orchestration: spine + LLM specialists (no provider SDK). |
 | `anthropic` | Anthropic SDK | Anthropic (Claude) provider. |
 | `openai` | OpenAI SDK | OpenAI and OpenAI-compatible providers. |
-| `memory` | Redis + Postgres/PGVector | Optional long-term memory (retrieval grounding only; never changes a verdict). |
+| `memory` | Redis + Postgres/PGVector | Optional memory layer: checkpointing, fleet-wide rate limiting, signal caching, and retrieval grounding. Never lowers a verdict. |
 
 Without any extra, `pip install safesc` gives you the frozen Stage 0–3 tools (`index`,
 `scan`) — deterministic discovery, parsing, hash verification, and cheap signals — but not

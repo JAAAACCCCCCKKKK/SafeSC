@@ -1,4 +1,31 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.11: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v2.12: Agent Architecture)
+
+> **v2.12 (the memory layer, wired).** v2.6 landed the §3 store *clients* and marked the
+> layer done. It was not: nothing in the shipped `safesc` console script ever constructed
+> them, so `ShortTermStore.checkpointer()`, `SessionManager.try_acquire`, `cache_get`/
+> `cache_set` and the `kind='fingerprint'` record type all had **zero call sites**, and the
+> one path that *was* wired retrieved nothing — `report_agent` persisted under
+> `artifact_id` (`ecosystem:name@version+hash`) while the specialist looked up the bare
+> `dep_key`, so exact-hash recall missed its own record for every hashed dependency. Five
+> gaps, all now closed with code: (1) a **tier-3 runtime** (§3.6) that builds the stores
+> from `SAFESC_REDIS_URL`/`SAFESC_PGVECTOR_DSN` — each half independently useful, so Redis
+> alone already buys exact-hash verdict recall with no embedding key — (2) **checkpointing
+> that can resume**, via
+> a stable per-request thread key behind `--resume` (§3.1), (3) the **semaphores enforced**
+> at their call sites, including a new fleet-wide `sem:host:{host}` (§2.7.3, §5.2), (4) a
+> **curated known-attack fingerprint corpus** with an external ingest command (§3.2), and
+> (5) **prior-analysis reuse that hits** — the key fix above, plus the cross-run
+> cheap-signal cache the hot store was always meant to serve (§3.1).
+>
+> The governing rule for all five, and the reason each failure mode was chosen the way it
+> was: **every memory and rate-limit failure degrades toward more analysis, never toward a
+> downgrade.** An unreachable store runs the audit store-free; a saturated width semaphore
+> runs the specialist anyway; a broken per-host gate lets the request through; a corrupt or
+> unreachable cache re-collects everything. The one place that fails *closed* is the LLM
+> budget, where denial skips a specialist and marks the run incomplete — which §2.5 already
+> establishes can only lose an escalation, never manufacture one. Fewer signals read as
+> *cleaner*, so no availability problem may ever be able to produce a passing gate.
+> Builds on v2.11.
 
 > **v2.11 (severity policy corrected before release).** Pre-release review of v1.2.1
 > caught that v2.9 shipped the new rust `links` signal at **HIGH**, mirroring npm. That
@@ -116,7 +143,9 @@ The single most important thing to understand before reading further: **the agen
 | Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
 | Graph assembly + `run()` seam | `graph/build.py` | ✅ implemented, unit-tested (§6.1.4) |
 | Memory store clients (Redis + PGVector) | `memory/short_term.py`, `memory/long_term.py` | ✅ implemented, unit-tested (§3.1, §3.2); consumed by MemoryManager via injection |
-| Live store deployment (Redis/Postgres instance, checkpointer schema, pgvector index) | infra | ⛔ deployment wiring only, not logic |
+| Store wiring (tier-3 runtime, checkpointer, semaphore call sites, signal cache) | `entrypoints/bootstrap.py`, `graph/build.py`, `graph/spine.py` | ✅ implemented, unit-tested (§3.6) |
+| Known-attack fingerprints (corpus + ingest) | `memory/fingerprints.py`, `fingerprints/` | ✅ implemented, unit-tested (§3.2) |
+| Live store deployment (a running Redis/Postgres instance) | infra | ⛔ ops only — `safesc store init` creates the schema |
 | Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
 | Entrypoints (`cli.py`) | `entrypoints/` | ✅ implemented (CLI; the HTTP API lives in a separate private repo) |
 | Reporter (SARIF / Markdown / JSON) | `reporter/` | ✅ implemented, unit-tested (§6, §7) |
@@ -227,7 +256,11 @@ The division of labour with §2.7.1 is the load-bearing detail: the inner constr
 #### 2.7.3 Session Manager (`session_manager.py`) *(implemented)*
 - Assigns each run a **ULID** `run_id` — lexicographically sortable, so Redis and PGVector keys range-query and GC by time without a separate index.
 - Holds the §5.2 distributed semaphores as a Redis **ZSET token** pattern, not a raw INCR/DECR counter: acquire = `ZADD run_id→expiry_ts`; the live holder count is `ZCARD` taken *after* a `ZREMRANGEBYSCORE` sweep of expired tokens. This self-heals when a worker dies mid-run — a leaked slot ages out on its own instead of pinning the semaphore for every later run.
-- Two semaphore classes: `sem:llm_budget:{run_id}` (a hard cross-branch cap that backstops the §5.3 `sum_deltas` counter — the reducer does the in-graph logic, the semaphore stops parallel branches racing past the ceiling) and `sem:fanout_width:{run_id}` (caps concurrent specialist fan-out so one large repo can't open dozens of simultaneous LLM connections and trip external rate limits).
+- **Three** semaphore classes, two run-scoped and one global:
+  - `sem:llm_budget:{run_id}` — a *budget*, not a concurrency limit. Backstops the §5.3 `sum_deltas` counter: the reducer does the in-graph logic, the semaphore stops parallel branches racing past the ceiling before their deltas have merged back. Acquired via `consume()`, which **never releases** — releasing would let the next specialist reuse the same unit and the ceiling would never bind. The key TTL reclaims it.
+  - `sem:fanout_width:{run_id}` — a genuine concurrency limit, so one large repo can't open dozens of simultaneous LLM connections and trip a provider rate limit. Acquired via `slot()`, released in `finally`.
+  - `sem:host:{host}` — per external registry, and deliberately **not** run-scoped (§5.2). A registry's rate limit belongs to the registry, not to one audit, so concurrent audits across a fleet must share one budget per host or they will collectively trip it while each stays individually polite. Injected into the frozen scan layer as a `host_gate` seam; nothing under `tools/` imports Redis.
+- **Call sites, and which way each one fails.** The two run-scoped semaphores wrap every specialist node, outermost, as `fanout_limited_node → budgeted_node → auto_repaired_node → constraint_validated` — one width slot covers the whole node including auto-repair's retries, and §2.7's fixed inner ordering is untouched. Width is outside the budget check so a call that will be refused a budget unit does not occupy a width slot while waiting to find that out. Budget denial **fails closed** (skip the specialist, degrade the dimension, run marked incomplete): §2.5 already establishes a skipped specialist can only lose an escalation. Width saturation and per-host gate failure **fail open** (run anyway, warn, note it): those are politeness constraints, and skipping the call would lose a signal, which is strictly worse. A store-free session (tier 2, §3.6) leaves every node exactly as it was.
 - Release runs in a `finally`; a key TTL slightly longer than the worst-case run time is the backstop if release itself fails.
 
 #### 2.7.4 Memory Manager (`memory_manager.py`) *(implemented)*
@@ -248,8 +281,11 @@ The stores in §3 *hold* memory; this component is the **only** code allowed to 
 ## 3. Memory System
 
 ### 3.1 Short-Term Memory — Redis *(implemented: `memory/short_term.py`)*
-- LangGraph checkpointer backend: mid-run state survives node retries and enables resume. `ShortTermStore.checkpointer()` returns a `RedisSaver` bound to the same instance (lazy import).
-- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse on the same repo/branch, TTL 7 days (v1 L2) — `cache_get`/`cache_set` under a `cache:` namespace.
+- LangGraph checkpointer backend: mid-run state survives node retries and enables resume. `ShortTermStore.checkpointer()` returns a `RedisSaver` bound to the same instance (lazy import), tolerating both the context-manager and direct-return shapes `from_conn_string` has had across releases and calling `setup()` when present.
+  - **Resume needs a stable thread id, and that is opt-in.** `--resume` derives the LangGraph `thread_id` from the *request* (`sha256(mode|target|ecosystem)`, `graph.build.thread_key`) so a re-invocation lands on the interrupted run's checkpoint. Without the flag the thread id is the run's fresh ULID — because the same stability that enables resume would otherwise make a routine second audit of the same repo replay a finished thread instead of re-running it. `run_id` stays the ULID either way, for keys and logs.
+- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse, TTL 7 days (v1 L2) — `cache_get`/`cache_set` under a `cache:` namespace.
+  - **Cheap-signal reuse is keyed on the pinned artifact, not the repo**: `sig:{version}:{ecosystem}:{name}@{version}`, so the pool is shared across every project depending on the same release — which is where nearly all the saving is, since popular transitive dependencies recur everywhere. The leading version tag is bumped when a collector changes, invalidating the pool rather than re-hydrating stale-shaped entries.
+  - **Only three of the five dimensions may be reused** (`collector.CACHEABLE_DIMENSIONS`): identity, behavior and provenance observe things that are immutable for a pinned `name@version` — install hooks, publish timestamps, hashes, name similarity. **Vulnerability and popularity are always re-collected**, because they are the two that move underneath a frozen version: OSV advisories are filed continuously, so a cached "no known CVE" is precisely the stale answer that becomes a false clean, and repo-archived status changes the same way. Every cache failure — unreachable, corrupt, unparseable — falls through to a *full* collection; the cache may only ever save work, never shrink the signal set.
 - Distributed semaphore store (§5.2).
 
 `ShortTermStore` is a thin, injectable wrapper: it exposes the JSON-friendly `get`/`set` the MemoryManager uses and passes the SessionManager's ZSET semaphore primitives (`zadd`/`zremrangebyscore`/`zcard`/`zrem`/`pexpire`) straight through to the wrapped client, so it is *the* single object injected as `redis=` to both consumers — no node imports a raw client (§6.1.6). `from_url` builds the real redis-py client lazily.
@@ -260,6 +296,8 @@ Note: within a single graph run, parallel specialists synchronize via LangGraph 
 - Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns). `PGVectorStore` exposes `query_similar`/`upsert`/`get`/`gc` plus an idempotent `ensure_schema()`; vectors are written as `::vector` literals over a plain DB-API connection (no adapter registration), and `upsert` carries a defense-in-depth `GREATEST(...)` max-wins so a cross-process race on the same immutable hash can't lower a stored severity (§2.7.4). The connection is injected (`connect` factory), so it unit-tests against a fake; `from_dsn` builds the real psycopg one lazily.
 - Used purely as **retrieval context**: before a Stage-4 specialist runs, PGVector is queried for prior or behaviorally-similar findings and those are supplied as few-shot context. This cuts redundant deep analysis (cost) and grounds the LLM in prior evidence.
 - Replaces v1's L3 (S3/Redis team cache). PGVector is now the canonical long-term store; Redis stays hot/short-term only.
+- **Known-attack fingerprints are a curated corpus, not a byproduct of runs** *(implemented: `memory/fingerprints.py`, `fingerprints/known_attacks.yaml`)*. Each entry describes the *behavioural shape* of a documented supply-chain attack (XZ-Utils build payload, event-stream maintainer handover, dependency confusion, conditional destructive protestware) as inert prose — the `text` field is what gets embedded, and it is matched against a dependency's static-signal summary, not its name. Two properties keep this safe and both are structural: records are keyed `fingerprint:{id}`, a namespace no `artifact_id` can collide with, and they enter the store **only** through `safesc fingerprint load`, an external finite job like `safesc gc` (§3.4) — `report_agent`'s write path emits only `escalated`/`benign`, so **no audit run can create one**. Because the corpus is version-controlled, "what SafeSC believes an attack looks like" changes through code review. `PGVectorStore` never demotes a stored `fingerprint` on a later upsert, and §3.4's GC retains them indefinitely.
+- **A retrieved fingerprint is labelled differently from a prior verdict.** `MemoryContext.as_prior_findings()` renders it as `[known-attack pattern <id>]` rather than `[similar <artifact_id>]`, because the two warrant different reasoning — one says "this exact artifact was judged before", the other says "this resembles a documented attack" — and a specialist that cannot tell them apart will cite the wrong thing. It remains prompt-only context under §3.3 either way.
 - **Embeddings are produced by an external provider API, not by SafeSC.** The LLM provider (Claude) has *no* first-party embeddings endpoint, so the embedding model is a **separate service with a separate, user-supplied key (BYOK, §3.5)**. Base URL and model stay configurable per deployment (`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` may set non-secret defaults), but the **key itself is caller-supplied and never server-stored**. For the Claude stack this defaults to **Voyage AI** (Anthropic's recommended partner); a base URL leaves it provider-swappable (OpenAI / Google / Cohere) with no code change. The wrapper lives in `memory/embedding_client.py` and is called *only* by the Memory Manager (§2.7.4). Vector **dimensionality follows from the chosen model and fixes the PGVector column width**, so it must be pinned per deployment — changing embedding model means a re-index, not a hot swap.
 
 ### 3.3 Memory Safety Boundary (iron rule, extended)
@@ -287,6 +325,24 @@ Security invariants (SafeSC is a security tool — these are load-bearing):
 2. **Keys never enter `AuditState`**, which is checkpointed to Redis (§3.1) — that would persist a user secret. Credentials travel out of band via injected deps (`build_specialist_deps`) and LangGraph `configurable`, never through a state channel. This is *why* the specialist `LLMClient` was designed as an injected seam (§2.3) rather than a state field.
 3. Keys are never written to PGVector or any report artifact.
 4. The Anthropic/embedding client is constructed **per `UserCredentials`**, so concurrent runs never share a key or an account. A `base_url` on either credential routes through a proxy/gateway/Bedrock-compatible endpoint without code change.
+
+`EmbeddingCredentials.from_env()` exists as a second, narrower intake: the maintenance jobs (§3.4, `fingerprint load`) touch the stores but never reason, so requiring `SAFESC_LLM_API_KEY` for them would force an operator to hold a reasoning key just to run a CronJob.
+
+### 3.6 Deployment Tiers *(implemented: `entrypoints/bootstrap.py`)*
+
+The same console script serves a laptop and a fleet. `select_runtime()` picks a tier purely from the caller's environment; nothing downstream knows which one it got, because the stores are baked into the tool seams at construction time (exactly as `exclude` is, §2.1).
+
+| Tier | Trigger | What it adds |
+|---|---|---|
+| **2 — store-free** *(default)* | neither var set | The Stage 0–3 spine + Stage-4 specialists. No Redis, no Postgres, no checkpointer. One finite CI audit needs none of them. |
+| **3 — Redis** | `SAFESC_REDIS_URL` | Checkpointer (so `--resume` works), the §2.7.3/§5.2 semaphores, the cross-run cheap-signal cache, **and** exact-hash verdict recall. A `MemoryManager` is built as soon as *either* store exists: `read_context` skips similarity without a vector/embedder and `persist` skips the vector upsert, so the whole exact-hash path works on Redis alone — no embedding provider, no second key. |
+| **3 — + PGVector** | `SAFESC_PGVECTOR_DSN` + `SAFESC_EMBEDDING_API_KEY` | Adds the *similarity* half: behaviourally related prior findings and the known-attack fingerprint corpus (§3.2). The embedding key is required by the **vector store**, not by the memory layer as a whole — `require_embedding` follows `memory.vector`, so Redis-only is never asked for one. |
+
+Half-configured is a legitimate deployment — Redis alone is the common one, and deliberately the cheapest useful configuration: everything except similarity search, for one store and no extra key.
+
+**A configured-but-unreachable store degrades a tier with a warning rather than failing the run.** This follows directly from §3.3: everything the stores provide can only *escalate* a verdict, so running without them costs efficiency and grounding, never correctness. `SAFESC_MEMORY_STRICT=1` makes it a hard error instead, for deployments where a silently store-free audit is itself the incident. Other knobs: `SAFESC_EMBEDDING_DIM` (**must** match the model — it pins the column width, §3.2), `SAFESC_HOST_CONCURRENCY`, `SAFESC_HOT_TTL_S`.
+
+Schema creation is explicit (`safesc store init`), not implicit on first use: an audit run should need neither DDL privileges nor a schema check per invocation.
 
 ---
 
@@ -333,10 +389,14 @@ Unchanged from v1 §4.4. Suitable: install-script intent, commit/diff consistenc
 Unchanged v1 §6.1 targets; CI run target remains under 5 minutes; Stage-4 trigger rate 5–10%.
 
 ### 5.2 Concurrency
-Redis-backed distributed semaphores per external host, replacing v1 local semaphores, so concurrent audits and queries share one global rate budget. Exponential backoff with bounded retries; configurable API-token pools for rotation (v1 §6.2).
+Redis-backed distributed semaphores per external host (`sem:host:{host}`, §2.7.3), *layered on top of* — not replacing — v1's in-process `RateLimitedSession(per_host=…)`. The two answer different questions: the local `asyncio.Semaphore` bounds this process, the distributed token bounds the whole fleet, so concurrent audits and queries share one budget per registry. Local is acquired first, because it is free and taking it first caps how many coroutines can ever be queued against Redis.
+
+The gate is **injected** into the frozen Stage 0–3 scan layer and defaults to absent, so `tools/` stays store-free and only *timing* ever changes — §2.1's purity/idempotency rule holds. It **fails open** on a Redis error or a bounded-wait timeout: a rate limiter that gave up would return fewer signals, and fewer signals read as cleaner. Its sync Redis calls run via `asyncio.to_thread` so they never stall the collector event loop, and a short (30s) token TTL matching the request timeout means a killed worker frees its slot in seconds rather than pinning the host for the whole fleet.
+
+Exponential backoff with bounded retries; configurable API-token pools for rotation (v1 §6.2).
 
 ### 5.3 LLM Call Cap
-Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is in place (`AuditState.llm_calls` via the `sum_deltas` reducer, plus `would_exceed_cap()`); nodes check before spending and report their delta after. Enforcement is **deterministic at the gate**: `plan_gate` (`graph/spine.py`) ranks fan-out candidates by trigger severity and emits only the first `llm_call_cap − llm_calls`, dropping the rest *before* any `Send`. Truncated deps keep their static escalation and get an "incomplete analysis" degraded note (v1 §6.3) — a routing decision, not a silent truncation, and not something parallel specialist branches can race past. The concrete cap value is still TBD (§9).
+Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is in place (`AuditState.llm_calls` via the `sum_deltas` reducer, plus `would_exceed_cap()`); nodes check before spending and report their delta after. Enforcement is **deterministic at the gate**: `plan_gate` (`graph/spine.py`) ranks fan-out candidates by trigger severity and emits only the first `llm_call_cap − llm_calls`, dropping the rest *before* any `Send`. Truncated deps keep their static escalation and get an "incomplete analysis" degraded note (v1 §6.3) — a routing decision, not a silent truncation, and not something parallel specialist branches can race past. Under fan-out the plan is computed before parallel deltas merge, so `sem:llm_budget:{run_id}` (§2.7.3) backstops it at the node. The concrete cap value is still TBD (§9).
 
 ---
 
@@ -361,7 +421,8 @@ safesc/
 │   ├── state.py                      # ✅ AuditState + channel reducers (§2.6)
 │   ├── router.py                     # ✅ scope split only (§2.2-A)
 │   ├── single_pkg.py                 # ✅ single-package entry node → shared spine (§2.2-A)
-│   ├── spine.py                      # ✅ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B)
+│   ├── spine.py                      # ✅ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B);
+│   │                                 #    load_default_tools bakes in exclude/cache/host_gate
 │   ├── specialists/                  # ✅ base.py + identity_agent.py, behavior_agent.py, provenance_agent.py
 │   │                                 #    (no popularity/vulnerability agent — §2.3)
 │   ├── llm_client.py                 # ✅ concrete BYOK Claude client (§3.5)
@@ -371,12 +432,17 @@ safesc/
 │                                     #    session_manager.py, memory_manager.py (§2.7)
 ├── memory/                           # ✅ short_term.py (ShortTermStore/Redis, §3.1),
 │                                     #    long_term.py (PGVectorStore, §3.2/§3.4),
-│                                     #    embedding_client.py (BYOK seam, §3.2/§3.5).
+│                                     #    embedding_client.py (BYOK seam, §3.2/§3.5),
+│                                     #    fingerprints.py (known-attack corpus, §3.2).
 │                                     #    All injected into MemoryManager; live store = infra (⛔)
-├── entrypoints/                      # ✅ cli.py (audit | query | gc — gc = PGVector CronJob, §3.4)
+├── entrypoints/                      # ✅ cli.py (audit | query | gc | store init |
+│                                     #    fingerprint load) + bootstrap.py (tier selection, §3.6)
 │                                     #    (HTTP API is out of scope for this repo — see below)
 ├── reporter/                         # ✅ SARIF / Markdown / JSON — build_report + 3 pure renderers (§6, §7)
 └── security/                         # ✅ credentials.py — BYOK credentials for LLM + embedding services (§3.5)
+
+fingerprints/                         # ✅ curated known-attack corpus (YAML, §3.2) —
+                                      #    version-controlled, loaded by `safesc fingerprint load`
 ```
 
 Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
@@ -388,7 +454,8 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 4. **The graph is the core; `safesc/entrypoints/` are thin.** The CLI calls `safesc.graph.build.run(request)`; it contains no audit logic. (Any external HTTP API is a separate private repo that also calls the same `run()` seam — it is not part of this repo.)
 5. **v1 layering preserved:** `safesc/tools/scan/signals/` and `safesc/graph/specialists/` receive standardized `Dependency` objects and never import `safesc/tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
 6. **Redis and PGVector have exactly one reader/writer: the Memory Manager (§2.7.4).** No node imports a store or embedding client directly; specialists see memory only as an injected read-only `MemoryContext`, and long-term persistence happens at exactly one point (tail of `report_agent`). This is the structural form of the §3.3 escalate-only-memory rule.
-7. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).
+7. **Stores are injected at construction, never imported by a node.** `select_runtime` (§3.6) is the only place that builds a `ShortTermStore`/`PGVectorStore`; from there the cache and host gate are baked into the tool seams and the MemoryManager/SessionManager receive the store by injection. This is what lets tier 2 exist at all — remove the stores and every seam still works unchanged — and it is why `tools/` remains importable with no Redis installed.
+8. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).
 
 ---
 
@@ -404,6 +471,7 @@ Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes,
 | LLM | Claude API | Structured output + prompt caching; **BYOK key** per caller (§3.5) |
 | Credentials | BYOK (`SecretStr`) | Caller-supplied per invocation; never in state/logs/PGVector (§3.5) |
 | Scheduled maintenance | Kubernetes CronJob | PGVector GC as an external finite job — `safesc gc` (§3.4) |
+| Attack fingerprints | Curated YAML corpus | Version-controlled, ingested by `safesc fingerprint load`; no audit run can write one (§3.2) |
 | Lockfile parsing | Syft → CycloneDX | Unchanged |
 | Path exclusion | `pathspec` | Gitignore-syntax `.safescignore` / `--exclude` matching (§2.1, v2.8) |
 | CVE source | OSV.dev | Unchanged |
@@ -463,10 +531,17 @@ Resolved in v2.10 (coded — a split decision, one half deliberately not built):
 Resolved in v2.11 (coded):
 - [x] Stage-3 behavior severity policy — made explicit and test-pinned rather than left implicit per-ecosystem. **Only opted-in code execution may reach `ScoreConfig.fail_threshold`**: npm's lifecycle hook stays HIGH; rust's `links` and python's sdist-only are routine build-system facts on ubiquitous legitimate packages and are MEDIUM (gray zone → BehaviorAgent). Corrects v2.9, which shipped rust at HIGH and would have newly failed CI for every consumer of `openssl-sys`/`ring`/`libz-sys` — irrecoverably, since §4.3 lets the LLM escalate but never downgrade. Guarded by `test_stage3_signals.py::test_only_optedin_code_execution_can_fail_a_gate`, so adding a future gate-failing ecosystem signal is now a deliberate, visible act.
 
+Resolved in v2.12 (coded):
+- [x] **Store wiring — the layer, not just the clients.** v2.6 shipped `ShortTermStore`/`PGVectorStore` and marked §3 done, but nothing constructed them: `checkpointer()`, `try_acquire`, `cache_get`/`cache_set` and `kind='fingerprint'` all had zero call sites. `entrypoints/bootstrap.py` now selects a **tier** from the environment (§3.6) and bakes the stores into the tool seams; a configured-but-unreachable store degrades a tier with a warning (or fails hard under `SAFESC_MEMORY_STRICT`), because §3.3 makes running store-free always safe.
+- [x] **Checkpointing that can actually resume.** `run()` passed `thread_id=run_id`, a fresh ULID per invocation, so no checkpoint was ever findable. `--resume` now derives a stable per-request thread key (`graph.build.thread_key`); the default stays a fresh ULID so a routine second audit re-runs rather than replaying a finished thread (§3.1).
+- [x] **Distributed rate limiting enforced.** The §2.7.3 semaphores now wrap every specialist node, with `consume()` (budget, never released) separated from `slot()` (concurrency, released in `finally`) — conflating them would have left the §5.3 ceiling permanently un-capped. A third class, fleet-wide `sem:host:{host}`, is injected into the frozen scan layer as a `host_gate` seam (§5.2). Failure directions are chosen per class: budget fails closed, width and host fail open.
+- [x] **Known-attack fingerprints.** `memory/fingerprints.py` + `fingerprints/known_attacks.yaml`: a curated, version-controlled corpus of four documented patterns, ingested only by the external `safesc fingerprint load` job, keyed in a namespace no artifact can collide with, never demoted by a later upsert, retained indefinitely by GC, and labelled distinctly on retrieval (§3.2). `tests/test_attack_fixtures.py` proves the seeded XZ-Utils fingerprint reaches a real specialist's prompt, offline.
+- [x] **Prior-analysis reuse that hits.** Two independent bugs. (a) The write path keyed on `artifact_id` (`...+hash`) while the read path passed the bare `dep_key`, so exact-hash recall missed its own record for every hashed dependency; `make_task_lookup` fixes the key and replaces the degenerate query text (the package name) with the dep's behavioural signal summary, which is what makes similarity — and fingerprint matching — meaningful at all. The task travels to the seam as an **optional keyword**, because a legacy one-argument `memory_lookup(dep_key)` would accept a task passed positionally and silently receive the wrong type, whereas an unexpected keyword raises `TypeError` and takes the fallback cleanly. (b) The §3.1 cheap-signal cache had no caller; it is now wired at the `collect_signals` seam, reusing only the three dimensions that are immutable for a pinned `name@version` and always re-collecting vulnerability/popularity (§3.1).
+
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
 - [ ] Concrete hard cap *value* for LLM calls per run — mechanism and enforcement have shipped (`sum_deltas` + `would_exceed_cap`, enforced deterministically in `plan_gate`, §5.3); only the numeric ceiling is TBD
-- [ ] Live store deployment — a running Redis + Postgres/PGVector instance, LangGraph checkpointer schema (keying, TTL, eviction), and running `ensure_schema()` for the pgvector table + index. The store *clients* have shipped (§3.1, §3.2); this is the last piece and is deployment wiring, not logic
+- [ ] Live store deployment — a running Redis + Postgres/PGVector instance. The clients (§3.1, §3.2) and the wiring (§3.6, v2.12) have shipped, and `safesc store init` creates the pgvector schema; what remains is provisioning plus the LangGraph checkpointer's own Redis keying/TTL/eviction policy, which is ops, not logic. A live-instance smoke test (`--resume` across a killed run; a second audit hitting the signal cache) is worth adding behind `@pytest.mark.integration`
 - [ ] Concrete embedding *model* (e.g. `voyage-3-large` vs a cheaper tier) and the similarity threshold for "behaviourally similar" — the *source* is settled (§3.2); the specific model and cutoff are tuning choices, and the model choice also fixes the PGVector column dimensionality
 - [ ] Auth model for the `query` route (new attack surface)
 - [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination
