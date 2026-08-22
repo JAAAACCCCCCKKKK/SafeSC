@@ -93,7 +93,15 @@ class ShortTermStore:
 
     def checkpointer(self):
         """Return a LangGraph Redis checkpointer bound to the same instance. Lazy import
-        keeps langgraph-checkpoint-redis an optional deployment dependency."""
+        keeps langgraph-checkpoint-redis an optional deployment dependency.
+
+        Two shapes have to be tolerated. Across `langgraph-checkpoint-redis` releases
+        `from_conn_string` returns either the saver directly or a *context manager*
+        yielding it; and the saver's Redis-side indices only exist after `setup()`.
+        Neither is stable enough to assume, so both are probed. The context manager is
+        deliberately entered without a matching `__exit__` — the saver must outlive this
+        call for the whole graph run, and the process is finite (§1.3), so the connection
+        is reclaimed at exit. `close()` on the store does not own it."""
         try:
             from langgraph.checkpoint.redis import RedisSaver  # lazy, optional
         except ImportError as exc:  # pragma: no cover
@@ -101,7 +109,15 @@ class ShortTermStore:
                 "langgraph-checkpoint-redis is not installed; install the 'memory' extra "
                 "to enable checkpointing"
             ) from exc
-        return RedisSaver.from_conn_string(self.config.url)
+
+        saver = RedisSaver.from_conn_string(self.config.url)
+        enter = getattr(saver, "__enter__", None)
+        if enter is not None:
+            saver = enter()
+        setup = getattr(saver, "setup", None)
+        if callable(setup):
+            setup()  # idempotent: creates the checkpoint indices if absent
+        return saver
 
     # ------------------------------------------------------------------ lifecycle
 

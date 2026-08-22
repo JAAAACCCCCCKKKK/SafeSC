@@ -9,6 +9,7 @@ constraint-validated(inner) LLM call; spine tools are with_retry-wrapped. BYOK c
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -16,6 +17,7 @@ from typing import Callable, Optional
 from safesc.security.credentials import UserCredentials
 from safesc.graph.harness.auto_repair import RetryPolicy, auto_repaired_node, with_retry
 from safesc.graph.harness.constraint_validator import ConstraintValidator
+from safesc.graph.harness.session_manager import budgeted_node, fanout_limited_node
 from safesc.graph.report_agent import ScoreConfig, add_report
 from safesc.graph.router import AuditRequest, route_condition, router_node
 from safesc.graph.single_pkg import NODE_RESOLVE_SINGLE, resolve_single_package
@@ -57,6 +59,48 @@ class RunConfig:
     score: ScoreConfig = field(default_factory=ScoreConfig)
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     max_repairs: int = 2
+    # Max specialists running concurrently (§2.7.3 sem:fanout_width). Only enforced when
+    # the session is Redis-backed; the store-free session has no semaphores.
+    fanout_width: int = 8
+    # Reattach to a previous run's checkpoint for the same request (§3.1). Off by default:
+    # a stable thread id is what makes resume possible, and it is also what would make a
+    # routine second audit replay a finished thread instead of re-running.
+    resume: bool = False
+
+
+def thread_key(request: AuditRequest) -> str:
+    """Deterministic LangGraph thread id for a request, used only under `resume`.
+
+    Derived from the request's identity rather than the run, because that is exactly the
+    property resume needs: the same target audited again must land on the same thread to
+    find the interrupted run's checkpoint. The default (non-resume) path uses the run's
+    ULID instead, so each invocation gets a fresh thread.
+    """
+    ident = f"{request.mode.value}|{request.target}|{getattr(request, 'ecosystem', None) or ''}"
+    return "safesc:" + hashlib.sha256(ident.encode("utf-8")).hexdigest()[:26]
+
+
+def _semaphore_wrapped(node, *, node_name: str, session, run_id: str, config: RunConfig):
+    """Apply the two run-scoped semaphores around a specialist node (§2.7.3).
+
+    Outermost is the width limiter, so a single slot covers the node's whole lifetime
+    including auto-repair's retries; §2.7's fixed `auto_repair(outer) → validator(inner)`
+    ordering is untouched underneath. The budget check sits just inside it, because a
+    request that will be refused a budget unit should not occupy a width slot while
+    waiting to find that out.
+
+    A store-free session (tier 2 — no `try_acquire`) leaves the node exactly as it was.
+    """
+    if session is None or not hasattr(session, "try_acquire"):
+        return node
+    node = budgeted_node(
+        node, node_name=node_name, session=session, run_id=run_id,
+        capacity=config.llm_call_cap,
+    )
+    return fanout_limited_node(
+        node, node_name=node_name, session=session, run_id=run_id,
+        capacity=config.fanout_width,
+    )
 
 
 @dataclass
@@ -73,7 +117,16 @@ class RunResult:
         return self.gate_decision.passed
 
 
-def build_graph(*, specialist_deps, tools: InjectedTools, config: RunConfig, memory=None, checkpointer=None):
+def build_graph(
+    *,
+    specialist_deps,
+    tools: InjectedTools,
+    config: RunConfig,
+    memory=None,
+    checkpointer=None,
+    session=None,
+    run_id: str = "",
+):
     """Assemble and compile the LangGraph. LangGraph is imported here (not at module
     load) so the rest of the package stays importable/testable without it."""
     from langgraph.graph import END, START, StateGraph
@@ -103,11 +156,15 @@ def build_graph(*, specialist_deps, tools: InjectedTools, config: RunConfig, mem
         [*SPECIALIST_NODE.values(), NODE_REPORT],
     )
 
-    # Stage-4 specialists: auto_repair(outer) around the constraint-validated(inner) node
+    # Stage-4 specialists: semaphores(outermost) → auto_repair → constraint-validated(inner)
     for dimension, module in SPECIALIST_MODULES.items():
         node_name = SPECIALIST_NODE[dimension]
         raw = module.build_node(specialist_deps)
-        builder.add_node(node_name, auto_repaired_node(raw, node_name=node_name, policy=config.retry))
+        node = auto_repaired_node(raw, node_name=node_name, policy=config.retry)
+        node = _semaphore_wrapped(
+            node, node_name=node_name, session=session, run_id=run_id, config=config,
+        )
+        builder.add_node(node_name, node)
         builder.add_edge(node_name, NODE_REPORT)
 
     # scorer / sole gate writer + single memory write point (§2.4, §2.7.4)
@@ -136,9 +193,10 @@ def run(
     config = config or RunConfig()
     run_id = session.new_run()
 
-    # memory read seam (prompt-only prior findings); resolve dep_key → (artifact_id, query).
-    # A deployment supplies a richer resolver (hash + static-signal summary).
-    memory_lookup = memory.make_lookup(lambda dk: (dk, dk)) if memory is not None else None
+    # memory read seam (prompt-only prior findings, §2.7.4). The task-aware lookup keys on
+    # `artifact_id` (hash included) so it can actually hit what `persist` wrote, and queries
+    # the vector store with the dep's behavioural signal text rather than its name.
+    memory_lookup = memory.make_task_lookup() if memory is not None else None
 
     specialist_deps = build_specialist_deps(
         credentials,
@@ -148,7 +206,7 @@ def run(
 
     graph = graph_factory(
         specialist_deps=specialist_deps, tools=tools, config=config,
-        memory=memory, checkpointer=checkpointer,
+        memory=memory, checkpointer=checkpointer, session=session, run_id=run_id,
     )
 
     # initial state carries NO credentials (§3.5) — only routing inputs + the cap
@@ -158,7 +216,8 @@ def run(
         ecosystem=getattr(request, "ecosystem", None),
         llm_call_cap=config.llm_call_cap,
     )
-    final = graph.invoke(initial, {"configurable": {"thread_id": run_id, "run_id": run_id}})
+    thread_id = thread_key(request) if config.resume else run_id
+    final = graph.invoke(initial, {"configurable": {"thread_id": thread_id, "run_id": run_id}})
 
     return _shape_result(run_id, request.mode, final, config)
 
