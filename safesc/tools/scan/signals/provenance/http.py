@@ -1,11 +1,23 @@
-"""Rate-limited async HTTP session with per-host semaphores and exponential backoff."""
+"""Rate-limited async HTTP session with per-host semaphores and exponential backoff.
+
+Concurrency is bounded twice, and the two layers answer different questions. The
+`asyncio.Semaphore` per host bounds *this process*; an optional injected ``host_gate``
+bounds the *whole fleet* (CLAUDE.md §5.2 — `sem:host:{host}`, backed by Redis via the
+SessionManager), so concurrent audits on different workers share one budget per registry
+instead of each staying politely under the limit while collectively exceeding it.
+
+The gate is injected and defaults to absent, which keeps this frozen Stage 0–3 module
+store-free: nothing here imports Redis, and every existing caller and test is unaffected.
+It only ever changes *timing*, never output, so the §2.1 purity/idempotency rule holds.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import random
 from collections import defaultdict
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -17,8 +29,16 @@ _BASE_BACKOFF = 0.5  # seconds
 
 
 class RateLimitedSession:
-    def __init__(self, *, per_host: int = _DEFAULT_PER_HOST) -> None:
+    def __init__(
+        self,
+        *,
+        per_host: int = _DEFAULT_PER_HOST,
+        host_gate: Callable[[str], Any] | None = None,
+    ) -> None:
         self._per_host = per_host
+        # url -> async context manager holding one fleet-wide token for that host (§5.2).
+        # None (the default) means process-local limiting only.
+        self._host_gate = host_gate
         self._semaphores: dict[str, asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(self._per_host)
         )
@@ -44,6 +64,22 @@ class RateLimitedSession:
         host = urlparse(url).netloc
         return self._semaphores[host]
 
+    @asynccontextmanager
+    async def _slot(self, url: str):
+        """Hold one request slot for *url*'s host: the local semaphore first, then the
+        distributed token if a gate was injected.
+
+        Local-first is deliberate. The in-process semaphore is free, so taking it first
+        caps how many coroutines can ever be queued against Redis at once; the reverse
+        order would let every pending request pile onto the distributed gate.
+        """
+        async with self._sem(url):
+            if self._host_gate is None:
+                yield
+                return
+            async with self._host_gate(url):
+                yield
+
     async def get_json(
         self, url: str, *, headers: dict[str, str] | None = None
     ) -> Any | None:
@@ -60,9 +96,8 @@ class RateLimitedSession:
         Returns None on 404 or after exhausting retries (network / 5xx / 429).
         """
         assert self._session is not None, "Use as async context manager"
-        sem = self._sem(url)
         for attempt in range(_MAX_RETRIES):
-            async with sem:
+            async with self._slot(url):
                 try:
                     async with self._session.post(url, json=payload) as resp:
                         if resp.status == 404:
@@ -99,9 +134,8 @@ class RateLimitedSession:
         definitive ``False`` should be treated as "the declared URL is dead".
         """
         assert self._session is not None, "Use as async context manager"
-        sem = self._sem(url)
         for attempt in range(_MAX_RETRIES):
-            async with sem:
+            async with self._slot(url):
                 try:
                     async with self._session.get(url, allow_redirects=True) as resp:
                         if resp.status in (404, 410):
@@ -141,9 +175,8 @@ class RateLimitedSession:
         self, url: str, *, as_json: bool, headers: dict[str, str] | None = None
     ) -> Any | None:
         assert self._session is not None, "Use as async context manager"
-        sem = self._sem(url)
         for attempt in range(_MAX_RETRIES):
-            async with sem:
+            async with self._slot(url):
                 try:
                     async with self._session.get(url, headers=headers) as resp:
                         if resp.status == 404:
