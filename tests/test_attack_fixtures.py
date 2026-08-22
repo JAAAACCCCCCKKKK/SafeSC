@@ -90,6 +90,7 @@ from safesc.graph.state import (
     LLMOutput,
     RunMode,
     Severity,
+    SignalOrigin,
     TrustDimension,
     append_notes,
     dep_key,
@@ -125,6 +126,10 @@ _REDUCERS = {
     "dispatched": union_keys,
     "gate_decision": write_once,
 }
+
+
+# The curated known-attack corpus shipped with the repo (§3.2).
+CORPUS_DIR = Path(__file__).resolve().parents[1] / "fingerprints"
 
 
 def _apply(state: AuditState, update: dict) -> AuditState:
@@ -310,6 +315,67 @@ class TestObfuscatedBuild:
         assert decision.passed is False
         assert decision.exit_code == 1
         assert decision.overall is Severity.CRITICAL
+
+    def test_a_seeded_fingerprint_reaches_the_specialist_prompt(self):
+        """The §3.2 known-attack corpus, end to end and still offline.
+
+        The curated XZ-Utils fingerprint is ingested into a fake vector store, the real
+        MemoryManager retrieves it through the real task lookup, and the real specialist
+        must carry it into its prompt labelled as a *pattern* — not as a prior verdict on
+        this crate, which would be a different (and false) claim. It stays context only:
+        the emitted signal is derived from the LLM verdict, never from the memory record.
+        """
+        from safesc.graph.harness.memory_manager import MemoryManager
+        from safesc.memory.fingerprints import ingest, load_corpus
+
+        class _FakeVector:
+            def __init__(self):
+                self.rows = {}
+
+            def upsert(self, key, embedding, record):
+                self.rows[key] = {**record, "artifact_id": key}
+
+            def get(self, key):
+                return self.rows.get(key)
+
+            def query_similar(self, embedding, k):
+                return [self.rows["fingerprint:xz-utils-build-payload"]][:k]
+
+        vector = _FakeVector()
+        embedder = lambda texts: [[float(len(t))] for t in texts]
+        ingest(load_corpus(CORPUS_DIR), vector=vector, embedder=embedder)
+
+        memory = MemoryManager(redis=None, vector=vector, embedder=embedder)
+        state = _run_spine(OBFUSCATED_BUILD, self._collect_signals())
+        task = plan_gate(state).fan_out[0]
+
+        prompts: list[str] = []
+
+        def _capturing_llm(system_prompt, user_prompt):
+            prompts.append(user_prompt)
+            return _stub_llm(
+                "malicious", 0.95,
+                evidence=["build.rs: decoded blob executed during compilation"],
+                reasoning="matches a known build-time payload pattern",
+            )(system_prompt, user_prompt)
+
+        out = behavior_agent.run(
+            task,
+            SpecialistDeps(
+                llm=_capturing_llm,
+                gather_evidence=lambda *a, **k: _stub_behavior_evidence(
+                    path="build.rs", excerpt="<decode + Command::new>"
+                ),
+                memory_lookup=memory.make_task_lookup(),
+            ),
+        )
+
+        prompt = prompts[0]
+        assert "known-attack pattern xz-utils-build-payload" in prompt
+        assert "PRIOR FINDINGS" in prompt
+        assert "must NOT lower your assessment" in prompt  # §3.3 stated in the prompt itself
+        # the fingerprint informed the prompt; the signal still comes from the LLM verdict
+        assert out["signals"][0].origin is SignalOrigin.LLM
 
     def test_query_mode_never_fails_ci(self):
         # Same dependency, same evidence, RunMode.QUERY: never a failing exit code,

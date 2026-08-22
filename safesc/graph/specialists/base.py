@@ -40,7 +40,9 @@ EvidenceGatherer = Callable[..., object]
 class SpecialistDeps:
     llm: LLMClient
     gather_evidence: Optional[EvidenceGatherer] = None      # defaults to the real Stage-4 tool
-    memory_lookup: Optional[Callable[[str], list[str]]] = None  # PGVector few-shot (§3.2), optional
+    # Prior-findings seam (§2.7.4 read path). Called as `(dep_key, task=...)` when the
+    # callable accepts the keyword, else as `(dep_key)` — see run_specialist step 2.
+    memory_lookup: Optional[Callable[..., list[str]]] = None    # PGVector few-shot (§3.2), optional
     artifact_download: Optional[Callable] = None            # for provenance artifact-vs-source
     validator: Optional["ConstraintValidator"] = None       # inner §2.7.1 wrapper; direct call if None
 
@@ -147,11 +149,23 @@ def run_specialist(
         logger.exception("evidence gather failed")
         return emit_degraded(node, f"evidence gather failed for {key}: {exc}")
 
-    # 2. optional prior context (informs only; never downgrades — §3.3)
+    # 2. optional prior context (informs only; never downgrades — §3.3).
+    #    The whole task is offered as an OPTIONAL KEYWORD, falling back to the plain
+    #    dep_key call — the same duck-typed widening used for `gather(...,
+    #    nearest_popular=...)` above, and a keyword for the same reason: a legacy
+    #    one-argument `memory_lookup(dep_key)` would happily accept a task passed
+    #    *positionally* and silently receive the wrong type, whereas an unexpected keyword
+    #    raises TypeError and takes the fallback cleanly.
+    #    Production wires the task form because a dep_key is `ecosystem:name@version`
+    #    while memory is keyed by `artifact_id` (`...+hash`) — so a dep_key-only lookup can
+    #    never hit the exact record `persist` wrote for any hashed dependency (§2.7.4).
     memory_ctx: list[str] = []
     if deps.memory_lookup:
         try:
-            memory_ctx = list(deps.memory_lookup(key) or [])
+            try:
+                memory_ctx = list(deps.memory_lookup(key, task=task) or [])
+            except TypeError:
+                memory_ctx = list(deps.memory_lookup(key) or [])
         except Exception as exc:
             logger.warning("memory lookup failed for %s: %s", key, exc)
 

@@ -597,3 +597,67 @@ def test_load_default_tools_discover_and_parse(tmp_path):
     deps = tools.parse(lockfiles)
     assert isinstance(deps, list)
     assert any(d.name == "requests" and d.ecosystem == "python" for d in deps)
+
+
+# ============================================================ tier-3 tool seams (§3.1, §5.2)
+
+
+def test_load_default_tools_is_unchanged_without_a_cache_or_gate():
+    """Tier 2 must behave exactly as before: no cache object, no host gate, no Redis."""
+    from safesc.graph.spine import load_default_tools
+
+    tools = load_default_tools()
+    assert callable(tools.collect_signals) and callable(tools.discover)
+
+
+def test_collect_signals_seam_consults_the_cache_when_one_is_injected(monkeypatch):
+    """The cache is baked in at construction time, like `exclude`, so nothing downstream
+    has to know whether a store exists."""
+    from safesc.graph import spine
+    from safesc.graph.spine import load_default_tools
+
+    seen = {}
+
+    def _fake_cached(dep, *, cache, run_all, run_fresh, cacheable_dims, ttl_s=None):
+        seen["cache"] = cache
+        seen["dims"] = cacheable_dims
+        return []
+
+    monkeypatch.setattr(spine, "_cached_collect_signals", _fake_cached)
+    sentinel = object()
+    tools = load_default_tools(cache=sentinel)
+    tools.collect_signals(_dep())
+
+    assert seen["cache"] is sentinel
+    assert seen["dims"] == frozenset(
+        {TrustDimension.IDENTITY, TrustDimension.BEHAVIOR, TrustDimension.PROVENANCE}
+    )
+
+
+def test_host_gate_reaches_the_stage3_collector(monkeypatch):
+    """§5.2: the fleet-wide limiter is injected into the frozen scan layer, never imported
+    by it."""
+    from safesc.graph.spine import load_default_tools
+    from safesc.tools.scan.signals import collector as scan_collector
+
+    seen = {}
+
+    def _fake_run_collection(deps, *, collectors=None, host_gate=None, **kw):
+        seen["host_gate"] = host_gate
+        return []
+
+    monkeypatch.setattr(scan_collector, "run_collection", _fake_run_collection)
+    gate = object()
+    load_default_tools(host_gate=gate).collect_signals(_dep())
+    assert seen["host_gate"] is gate
+
+
+def test_cacheable_dimensions_exclude_the_volatile_ones():
+    """Pinned here as well as in the scan layer: reusing a stale 'no known CVE' is the
+    one cache mistake that turns into a false clean."""
+    from safesc.tools.scan.signals.collector import CACHEABLE_DIMENSIONS
+    from safesc.tools.scan.signals.models import Dimension
+
+    assert Dimension.VULNERABILITY not in CACHEABLE_DIMENSIONS
+    assert Dimension.POPULARITY not in CACHEABLE_DIMENSIONS
+    assert Dimension.BEHAVIOR in CACHEABLE_DIMENSIONS

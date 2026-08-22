@@ -149,7 +149,70 @@ def _hash_result_to_graph(r) -> Signal:
     )
 
 
-def load_default_tools(*, exclude: Sequence[str] = ()) -> InjectedTools:
+# Bump when a cacheable collector's logic or output shape changes: the version is part of
+# every cache key, so incrementing it invalidates the whole reuse pool at once rather than
+# leaving stale-shaped entries to be re-hydrated by newer code (§3.1).
+_SIGNAL_CACHE_VERSION = "v1"
+
+
+def _signal_cache_key(dep: Dependency) -> str:
+    """Hot-cache key for one dependency's reusable Stage-3 signals.
+
+    Keyed on the pinned artifact identity, NOT on repo/branch, so the reuse pool is shared
+    across every project that depends on the same `name@version` — which is where almost
+    all of the saving is, since popular transitive dependencies recur everywhere.
+    """
+    return f"sig:{_SIGNAL_CACHE_VERSION}:{dep_key(dep)}"
+
+
+def _cached_collect_signals(
+    dep: Dependency,
+    *,
+    cache,
+    run_all: Callable[[Dependency], list[Signal]],
+    run_fresh: Callable[[Dependency], list[Signal]],
+    cacheable_dims: frozenset,
+    ttl_s: Optional[int] = None,
+) -> list[Signal]:
+    """Stage 3 for one dep, reusing the cacheable dimensions from the short-term store.
+
+    On a hit only the always-fresh collectors run (vulnerability/popularity — see
+    `collector.CACHEABLE_DIMENSIONS` for why those two can't be reused). On a miss every
+    collector runs and the cacheable subset is stored.
+
+    Every cache failure — unreachable store, corrupt entry, unparseable payload — falls
+    through to a *full* collection. The cache may only ever save work; it must never be
+    able to reduce the signal set, because fewer signals read as cleaner (§8).
+    """
+    key = _signal_cache_key(dep)
+    cached: Optional[list[Signal]] = None
+    try:
+        raw = cache.cache_get(key)
+        if raw is not None:
+            cached = [Signal.model_validate(item) for item in raw]
+    except Exception as exc:
+        logger.warning("signal cache read failed for %s: %s", key, exc)
+        cached = None
+
+    if cached is not None:
+        logger.debug("signal cache hit for %s (%d reused)", key, len(cached))
+        return cached + run_fresh(dep)
+
+    signals = run_all(dep)
+    reusable = [s for s in signals if s.dimension in cacheable_dims]
+    try:
+        cache.cache_set(key, [s.model_dump(mode="json") for s in reusable], ttl_s)
+    except Exception as exc:
+        logger.warning("signal cache write failed for %s: %s", key, exc)
+    return signals
+
+
+def load_default_tools(
+    *,
+    exclude: Sequence[str] = (),
+    cache=None,
+    host_gate=None,
+) -> InjectedTools:
     """Wire the spine's four seams to the real Stage 0–3 code, kept in one place so the
     spine never imports those modules directly (§6.1.5). Each seam is a thin per-dep
     adapter that calls the real implementation and translates to `graph.state.Signal`.
@@ -160,6 +223,10 @@ def load_default_tools(*, exclude: Sequence[str] = ()) -> InjectedTools:
     parameter rather than a per-call one so `InjectedTools.discover`'s single-arg
     contract (`Callable[[str], list[LockfileRef]]`) never changes — every existing fake
     built as `InjectedTools(discover=lambda target: ...)` keeps working unmodified.
+
+    `cache` (a `ShortTermStore`, §3.1) and `host_gate` (the fleet-wide per-host limiter,
+    §5.2) are baked in the same way and for the same reason. Both default to absent, which
+    is the store-free tier-2 path: identical behaviour to before, no Redis anywhere.
     """
     from pathlib import Path
 
@@ -182,8 +249,31 @@ def load_default_tools(*, exclude: Sequence[str] = ()) -> InjectedTools:
     def verify_hash(dep: Dependency) -> list[Signal]:  # Stage 2
         return [_hash_result_to_graph(r) for r in verifier.run_verification([dep])]
 
-    def collect_signals(dep: Dependency) -> list[Signal]:  # Stage 3
-        return [_scan_signal_to_graph(s) for s in collector.run_collection([dep])]
+    def _collect_with(dep: Dependency, collectors=None) -> list[Signal]:
+        return [
+            _scan_signal_to_graph(s)
+            for s in collector.run_collection(
+                [dep], collectors=collectors, host_gate=host_gate
+            )
+        ]
+
+    if cache is None:
+        def collect_signals(dep: Dependency) -> list[Signal]:  # Stage 3
+            return _collect_with(dep)
+    else:
+        _, _fresh = collector.split_collectors()
+        _cacheable_dims = frozenset(
+            TrustDimension(d.value) for d in collector.CACHEABLE_DIMENSIONS
+        )
+
+        def collect_signals(dep: Dependency) -> list[Signal]:  # Stage 3, cache-assisted
+            return _cached_collect_signals(
+                dep,
+                cache=cache,
+                run_all=_collect_with,
+                run_fresh=lambda d: _collect_with(d, collectors=_fresh),
+                cacheable_dims=_cacheable_dims,
+            )
 
     return InjectedTools(
         discover=discover,
