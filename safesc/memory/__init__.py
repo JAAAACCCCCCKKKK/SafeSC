@@ -8,12 +8,22 @@ the optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-r
 from __future__ import annotations
 
 from safesc.memory.embedding_client import Embedder, make_embedding_client
+from safesc.memory.fingerprints import (
+    FingerprintRecord,
+    default_corpus_path,
+    ingest as ingest_fingerprints,
+    load_corpus,
+)
 from safesc.memory.long_term import PGVectorConfig, PGVectorStore
 from safesc.memory.short_term import RedisConfig, ShortTermStore
 
 __all__ = [
     "Embedder",
     "make_embedding_client",
+    "FingerprintRecord",
+    "default_corpus_path",
+    "ingest_fingerprints",
+    "load_corpus",
     "PGVectorConfig",
     "PGVectorStore",
     "RedisConfig",

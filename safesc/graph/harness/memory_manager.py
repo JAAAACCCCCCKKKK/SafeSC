@@ -26,6 +26,18 @@ def artifact_id(dep) -> str:
     return f"{base}+{h}" if h else base
 
 
+def _query_text(task) -> str:
+    """The similarity query for one fan-out task: what the deterministic signals actually
+    observed, in the same register the fingerprint corpus is written in (§3.2). Bounded so
+    one pathological evidence list can't dominate the embedding."""
+    parts = [
+        f"{getattr(getattr(task, 'dimension', None), 'value', '')} concern",
+        " ".join(getattr(task, "trigger_sources", []) or []),
+        " ".join(str(e) for e in (getattr(task, "trigger_evidence", []) or [])[:10]),
+    ]
+    return " ".join(p for p in parts if p.strip())[:600]
+
+
 @dataclass(frozen=True)
 class MemoryContext:
     """Immutable read snapshot handed to a specialist as prompt-only prior context."""
@@ -35,11 +47,24 @@ class MemoryContext:
     similar: tuple[dict, ...] = ()          # behaviourally-similar records (PGVector)
 
     def as_prior_findings(self) -> list[str]:
+        """Render for the prompt. A curated known-attack fingerprint (§3.2) is labelled
+        differently from a prior verdict: they warrant different reasoning — one says
+        "this exact artifact was judged before", the other says "this resembles a
+        documented attack pattern" — and a specialist that cannot tell them apart will
+        cite the wrong thing. Both remain context only (§3.3)."""
+        from safesc.memory.fingerprints import fingerprint_id, is_fingerprint
+
         out: list[str] = []
         if self.exact:
             out.append(f"[exact-hash prior] severity={self.exact.get('severity')} — {self.exact.get('summary','')}")
         for r in self.similar:
-            out.append(f"[similar {r.get('artifact_id','?')}] severity={r.get('severity')} — {r.get('summary','')}")
+            if is_fingerprint(r):
+                out.append(
+                    f"[known-attack pattern {fingerprint_id(r)}] severity={r.get('severity')} "
+                    f"— {r.get('summary','')}"
+                )
+            else:
+                out.append(f"[similar {r.get('artifact_id','?')}] severity={r.get('severity')} — {r.get('summary','')}")
         return out
 
 
@@ -91,6 +116,34 @@ class MemoryManager:
             except Exception:
                 artifact_key, query_text = dk, ""
             return self.read_context(artifact_key, query_text).as_prior_findings()
+
+        return _lookup
+
+    def make_task_lookup(self) -> Callable[..., list[str]]:
+        """The `memory_lookup` the graph actually wires (§2.7.4 read path).
+
+        Signature is `(dep_key, *, task=None)`: the specialist offers the whole
+        `SpecialistTask` as a keyword, and that is what makes recall work at all. A dep_key
+        is `ecosystem:name@version`, but `persist` writes under `artifact_id(dep)` —
+        `ecosystem:name@version+hash` — so a dep_key lookup misses the exact record for
+        every dependency that has a hash, i.e. the entire point of exact-hash recall. The
+        task carries `dependency` (hash included), so the read key can be derived the same
+        way the write key was.
+
+        It also supplies a *behavioural* similarity query (`_query_text`) instead of the
+        package name. Embedding "npm:foo@1.0.0" retrieves packages with similar names,
+        which is the identity dimension's job and is already deterministic (§4.4); what the
+        vector store is for is finding artifacts that *behave* alike, including the curated
+        attack fingerprints (§3.2), and that needs the signal text as the query.
+
+        Without a task it degrades to the dep_key form rather than failing — a caller that
+        cannot supply one still gets whatever exact record exists under that key.
+        """
+        def _lookup(dep_key_str: str, *, task=None) -> list[str]:
+            dep = getattr(task, "dependency", None) if task is not None else None
+            if dep is None:
+                return self.read_context(str(dep_key_str), "").as_prior_findings()
+            return self.read_context(artifact_id(dep), _query_text(task)).as_prior_findings()
 
         return _lookup
 

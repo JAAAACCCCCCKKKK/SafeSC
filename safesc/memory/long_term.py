@@ -148,7 +148,7 @@ class PGVectorStore:
             artifact_id,
             vec,
             severity,
-            self._kind_for(severity),
+            self._kind_for(severity, record.get("kind")),
             (record.get("summary") or "")[:280],
             (record.get("reasoning") or "")[:1000],
             json.dumps(record.get("evidence", [])),
@@ -163,7 +163,13 @@ class PGVectorStore:
                     ON CONFLICT (artifact_id) DO UPDATE SET
                         embedding  = EXCLUDED.embedding,
                         severity   = GREATEST({t}.severity, EXCLUDED.severity),
+                        -- a curated known-attack fingerprint is never demoted to a
+                        -- verdict kind by a later write (§3.2); otherwise the higher
+                        -- severity's kind wins, mirroring the max-wins severity above.
                         kind       = CASE
+                                        WHEN {t}.kind = 'fingerprint'
+                                             OR EXCLUDED.kind = 'fingerprint'
+                                        THEN 'fingerprint'
                                         WHEN EXCLUDED.severity >= {t}.severity
                                         THEN EXCLUDED.kind ELSE {t}.kind END,
                         summary    = EXCLUDED.summary,
@@ -196,7 +202,12 @@ class PGVectorStore:
 
     # ------------------------------------------------------------------ helpers
 
-    def _kind_for(self, severity: int) -> str:
+    def _kind_for(self, severity: int, explicit: Optional[str] = None) -> str:
+        """Record kind. An explicit kind (the `fingerprint` corpus ingest sets one —
+        §3.2) always wins; otherwise it follows severity, which is what makes the
+        §3.4 differentiated-retention split computable from the row alone."""
+        if explicit:
+            return explicit
         return "escalated" if severity >= self.config.escalate_floor else "benign"
 
     @staticmethod

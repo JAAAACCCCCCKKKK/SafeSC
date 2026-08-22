@@ -108,3 +108,11 @@ packages = ["safesc"]
 # Ship the PEP 561 `py.typed` markers so the `Typing :: Typed` classifier is honest and
 # downstream type-checkers pick up SafeSC's inline annotations.
 artifacts = ["**/py.typed"]
+
+# The known-attack fingerprint corpus (CLAUDE.md §3.2) lives at the repo root so it is
+# reviewable in git alongside the code, but it has to reach an installed copy too —
+# otherwise `safesc fingerprint load` would only work from a checkout. Installed under
+# `safesc/memory/corpus/` (not `safesc/fingerprints/`) so the data directory can never be
+# mistaken for an importable package next to `safesc.memory.fingerprints`.
+[tool.hatch.build.targets.wheel.force-include]
+"fingerprints" = "safesc/memory/corpus"

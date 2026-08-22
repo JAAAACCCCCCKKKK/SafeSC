@@ -1,0 +1,87 @@
+# Curated known-attack fingerprints (CLAUDE.md §3.2).
+#
+# Each entry describes the BEHAVIOURAL SHAPE of a real, publicly documented supply-chain
+# attack. `text` is the field that gets embedded and matched against a dependency's
+# static-signal summary, so it is written as "what this attack does", not as a narrative
+# of the incident.
+#
+# These are inert prose descriptions. No entry contains executable content, and nothing
+# here is a detection rule — a retrieved fingerprint reaches a Stage-4 specialist as
+# prompt-only prior context that can raise concern but never lower a verdict (§3.3, §4.3).
+#
+# Load with:  safesc fingerprint load fingerprints/
+
+fingerprints:
+  - id: xz-utils-build-payload
+    summary: >-
+      Release tarball ships build-system files absent from the git repository, which
+      decode a payload during compilation.
+    severity: 4
+    text: >-
+      A distributed source archive contains build-system files (autotools m4 macros,
+      configure fragments, Makefile rules) that do not exist in the project's public git
+      history. During the build these read data hidden inside files presented as binary
+      test fixtures, pipe it through a chain of substitution and decompression commands,
+      and link the decoded object into the resulting shared library. The behaviour is
+      invisible to anyone reading the git tree and only appears when building from the
+      published artifact. Indicators: a source-vs-artifact mismatch on release contents,
+      a build script that reads from a test-data directory, obfuscated shell inside the
+      build system, and a recently onboarded co-maintainer cutting the release.
+    references:
+      - "CVE-2024-3094"
+      - "https://www.openwall.com/lists/oss-security/2024/03/29/4"
+
+  - id: event-stream-handover-postinstall
+    summary: >-
+      Maintainer hands the package to a new contributor, who adds a dependency whose
+      install hook decrypts a payload targeting one downstream application.
+    severity: 4
+    text: >-
+      An unpaid maintainer of a widely depended-on package transfers publish rights to a
+      volunteer who has contributed only trivial patches. The new owner publishes a minor
+      version adding a fresh transitive dependency. That dependency's install lifecycle
+      hook, or its minified build output, decrypts an embedded blob using a key derived
+      from the consuming application's own package description, so the payload stays inert
+      everywhere except one specific downstream target. Indicators: recent maintainer
+      handover, a new dependency added in a patch release, an install lifecycle hook,
+      minified or encoded content in a published artifact with no matching source, and
+      behaviour conditioned on the identity of the consuming project.
+    references:
+      - "https://github.com/dominictarr/event-stream/issues/116"
+
+  - id: dependency-confusion-internal-name
+    summary: >-
+      An internal package name is registered on the public registry at a higher version,
+      so resolvers prefer the attacker's build.
+    severity: 4
+    text: >-
+      A name used only inside an organisation's private index is registered on the public
+      registry by an outside party at a version far above anything the organisation
+      publishes. Default resolver behaviour prefers the highest version across all
+      configured indexes, so builds silently fetch the public package instead of the
+      internal one. The published artifact typically runs code at install time that
+      transmits hostname, username, working directory, and environment variables to an
+      external endpoint as reconnaissance. Indicators: a first-seen public package whose
+      name matches an internal or scoped convention, an implausibly high initial version,
+      a very recent first publication with no repository or a placeholder one, and install
+      time code that reads environment variables and performs an outbound request.
+    references:
+      - "https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610"
+      - "https://pytorch.org/blog/compromised-nightly-dependency/"
+
+  - id: protestware-conditional-destructive-payload
+    summary: >-
+      A maintainer ships a payload that checks the host's geolocation and then damages or
+      overwrites files on machines in a targeted region.
+    severity: 4
+    text: >-
+      A package's own maintainer publishes a version containing code that resolves the
+      host's public IP address to a country via an external geolocation service and, when
+      it matches a targeted region, overwrites files on disk or writes files to the user's
+      desktop. The change ships in a patch or minor release of a package with a very large
+      transitive install base and is not mentioned in the changelog. Indicators: an
+      outbound request to a geolocation API at import or install time, filesystem writes
+      outside the package directory, behaviour gated on a host attribute rather than on
+      program input, and encoded string constants hiding the target list.
+    references:
+      - "CVE-2022-23812"
