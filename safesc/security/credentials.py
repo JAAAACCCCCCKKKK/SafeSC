@@ -50,6 +50,26 @@ class EmbeddingCredentials(BaseModel):
     model_config = {"frozen": True}
 
 
+    @classmethod
+    def from_env(cls) -> "EmbeddingCredentials":
+        """Build embedding credentials alone, without an LLM key.
+
+        The maintenance jobs (`safesc fingerprint load`, and any store operation that
+        embeds) touch the §3 stores but never reason, so requiring `SAFESC_LLM_API_KEY`
+        for them would force an operator to hold a reasoning key just to run a CronJob.
+        `UserCredentials.from_env` remains the intake for anything that actually runs the
+        graph.
+        """
+        key = os.environ.get("SAFESC_EMBEDDING_API_KEY")
+        if not key:
+            raise MissingCredentialError("SAFESC_EMBEDDING_API_KEY")
+        return cls(
+            api_key=SecretStr(key),
+            base_url=os.environ.get("SAFESC_EMBEDDING_BASE_URL"),
+            model=os.environ.get("SAFESC_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL,
+        )
+
+
 class UserCredentials(BaseModel):
     """The full BYOK bundle for one invocation. `embedding` is optional — only needed
     when the memory layer (§3) is enabled for the run."""

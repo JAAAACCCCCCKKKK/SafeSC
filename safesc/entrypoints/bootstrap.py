@@ -1,21 +1,35 @@
 """entrypoints/bootstrap.py — production wiring for the ``safesc`` console script.
 
 This is the concrete wiring that ``entrypoints/cli.py``'s injectable ``main()`` was
-designed to receive. It constructs the **tier-2** runtime — the deterministic Stage 0–3
-spine plus the Stage-4 LLM specialists — with **no external stores**:
+designed to receive. It selects between **two deployment tiers** (§3.6) purely from the
+caller's environment, so the same console script serves a laptop and a fleet:
 
-* no Redis (the §5.2/§2.7.3 distributed semaphores exist for fleet-scale rate limiting;
-  a single finite CI audit does not need them),
-* no Postgres / PGVector (long-term memory, §3, is a cost/grounding optimisation that can
-  only *escalate*, never change a verdict — §3.3 — so omitting it is always safe),
-* no LangGraph checkpointer (every audit run is finite — §1.3).
+**Tier 2 — store-free (the default).** The deterministic Stage 0–3 spine plus the Stage-4
+LLM specialists, with no Redis, no Postgres and no checkpointer. A single finite CI audit
+needs none of them. The only requirement is a caller-supplied reasoning-LLM key
+(``SAFESC_LLM_API_KEY``, BYOK — §3.5).
 
-The only requirement is a caller-supplied reasoning-LLM key in the environment
-(``SAFESC_LLM_API_KEY``, BYOK — §3.5). The graph therefore runs with ``memory=None`` and
-``checkpointer=None``.
+**Tier 3 — store-backed.** Adds whatever the environment configures:
+
+* ``SAFESC_REDIS_URL`` → the §3.1 short-term store, which brings three things at once: a
+  LangGraph checkpointer (so ``--resume`` can reattach), the §2.7.3/§5.2 distributed
+  semaphores, and the cross-run cheap-signal cache;
+* ``SAFESC_PGVECTOR_DSN`` (+ ``SAFESC_EMBEDDING_API_KEY``) → the §3.2 long-term store, so
+  behaviourally *similar* prior findings and the known-attack fingerprint corpus ground
+  Stage-4 reasoning.
+
+Half-configured is a legitimate deployment, and Redis alone is the common one: it gives
+checkpointing, rate limiting, signal reuse **and** exact-hash verdict recall across runs —
+everything except similarity search — with no embedding provider and no second API key.
+
+**Store failure degrades rather than fails.** A configured-but-unreachable store falls the
+runtime back a tier with a warning, because everything the stores provide can only
+*escalate* a verdict (§3.3) — running without them loses efficiency and grounding, never
+correctness. ``SAFESC_MEMORY_STRICT=1`` turns that fallback into a hard error, for
+deployments where a silently store-free audit would itself be the incident.
 
 ``cli.py`` stays thin and testable (its ``main()`` takes injected deps); this module owns
-the concrete tool construction so importing the library surface stays side-effect-free.
+the concrete construction so importing the library surface stays side-effect-free.
 """
 
 from __future__ import annotations
@@ -24,7 +38,8 @@ import argparse
 import logging
 import os
 import sys
-from typing import Sequence
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence
 
 from safesc.entrypoints.cli import main as cli_main
 from safesc.graph.harness.session_manager import new_ulid
@@ -51,6 +66,32 @@ class LocalSession:
         return new_ulid()
 
 
+class MemoryUnavailableError(RuntimeError):
+    """A store was configured but could not be reached, under SAFESC_MEMORY_STRICT."""
+
+
+@dataclass
+class Runtime:
+    """Everything ``cli.main()`` needs, plus which tier produced it (for diagnostics)."""
+
+    tools: Any
+    session: Any
+    memory: Any = None
+    checkpointer: Any = None
+    tier: str = "local"
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
 def build_local_runtime(*, exclude: Sequence[str] = ()):
     """Wire the four Stage 0–3 seams to the real frozen tools (§6.1.5).
 
@@ -62,6 +103,111 @@ def build_local_runtime(*, exclude: Sequence[str] = ()):
     from safesc.graph.spine import load_default_tools
 
     return load_default_tools(exclude=exclude), LocalSession(), None
+
+
+def build_store_backed_runtime(
+    *,
+    redis_url: Optional[str],
+    dsn: Optional[str],
+    exclude: Sequence[str] = (),
+) -> Runtime:
+    """Construct the tier-3 runtime from the configured stores (§3.6).
+
+    Each store is optional and independent. Redis failing to answer a ``ping`` is raised
+    rather than swallowed here — the caller (``select_runtime``) owns the strict-vs-degrade
+    policy, so this function stays a straightforward constructor.
+    """
+    from safesc.graph.harness.memory_manager import MemoryManager
+    from safesc.graph.harness.session_manager import SessionManager
+    from safesc.graph.spine import load_default_tools
+
+    store = None
+    session: Any = LocalSession()
+    checkpointer = None
+    vector = None
+    embedder = None
+    host_gate = None
+    tier = "local"
+
+    if redis_url:
+        from safesc.memory.short_term import RedisConfig, ShortTermStore
+
+        store = ShortTermStore.from_url(
+            RedisConfig(url=redis_url, hot_ttl_s=_int_env("SAFESC_HOT_TTL_S", 7 * 24 * 3600))
+        )
+        if not store.ping():
+            raise MemoryUnavailableError(f"redis at {redis_url} did not respond to PING")
+        session = SessionManager(store)
+        # Fleet-wide per-registry limiting (§5.2). Shares one budget per host across every
+        # concurrently running audit, unlike the in-process per_host semaphore.
+        host_gate = session.host_gate(_int_env("SAFESC_HOST_CONCURRENCY", 10))
+        # Checkpointing is best-effort: it needs the langgraph-checkpoint-redis extra, and
+        # a deployment may well want Redis purely for caching and rate limiting.
+        try:
+            checkpointer = store.checkpointer()
+        except Exception as exc:
+            print(f"safesc: checkpointing unavailable ({exc}); --resume will not work", file=sys.stderr)
+        tier = "redis"
+
+    if dsn:
+        from safesc.memory.embedding_client import make_embedding_client
+        from safesc.memory.long_term import PGVectorConfig, PGVectorStore
+        from safesc.security.credentials import EmbeddingCredentials
+
+        vector = PGVectorStore.from_dsn(
+            PGVectorConfig(
+                dsn=dsn,
+                embedding_dim=_int_env("SAFESC_EMBEDDING_DIM", PGVectorConfig().embedding_dim),
+            )
+        )
+        embedder = make_embedding_client(EmbeddingCredentials.from_env())
+        tier = "redis+pgvector" if store is not None else "pgvector"
+
+    # A MemoryManager as soon as EITHER store exists — not only with pgvector. Redis alone
+    # supports the whole exact-hash path (`read_context` returns the exact record and skips
+    # similarity when there is no vector/embedder; `persist` writes the hot record and skips
+    # the vector upsert), so a Redis-only deployment gets cross-run verdict recall for free,
+    # with no embedding provider and no second API key. Only the *similarity* half — and the
+    # fingerprint corpus that rides on it (§3.2) — actually needs pgvector.
+    memory = (
+        MemoryManager(redis=store, vector=vector, embedder=embedder)
+        if (store is not None or vector is not None)
+        else None
+    )
+
+    # The short-term store doubles as the cross-run cheap-signal cache (§3.1); both it and
+    # the host gate are baked into the tool seams at construction time, so nothing
+    # downstream has to know whether a store exists.
+    tools = load_default_tools(exclude=exclude, cache=store, host_gate=host_gate)
+    return Runtime(tools=tools, session=session, memory=memory, checkpointer=checkpointer, tier=tier)
+
+
+def select_runtime(*, exclude: Sequence[str] = ()) -> Runtime:
+    """Pick the tier the environment asks for, degrading if a configured store is down."""
+    redis_url = os.environ.get("SAFESC_REDIS_URL") or None
+    dsn = os.environ.get("SAFESC_PGVECTOR_DSN") or None
+
+    if not redis_url and not dsn:
+        tools, session, memory = build_local_runtime(exclude=exclude)
+        return Runtime(tools=tools, session=session, memory=memory, tier="local")
+
+    try:
+        return build_store_backed_runtime(redis_url=redis_url, dsn=dsn, exclude=exclude)
+    except Exception as exc:
+        if _flag("SAFESC_MEMORY_STRICT"):
+            raise MemoryUnavailableError(
+                f"memory layer configured but unavailable ({exc}); "
+                f"SAFESC_MEMORY_STRICT is set, refusing to run store-free"
+            ) from exc
+        print(
+            f"safesc: memory layer unavailable ({exc}); continuing store-free. "
+            f"Analysis is unaffected — memory can only escalate a verdict, never lower one "
+            f"(§3.3) — but caching, rate limiting and prior-finding grounding are off. "
+            f"Set SAFESC_MEMORY_STRICT=1 to make this fatal instead.",
+            file=sys.stderr,
+        )
+        tools, session, memory = build_local_runtime(exclude=exclude)
+        return Runtime(tools=tools, session=session, memory=memory, tier="local")
 
 
 def _preparse_exclude(argv: Sequence[str]) -> list[str]:
@@ -124,9 +270,9 @@ def _make_console_utf8_safe() -> None:
 def main(argv=None) -> int:
     """Console-script entry point for ``safesc`` (audit | query | gc).
 
-    Builds the store-free runtime and delegates to the injectable ``cli.main``. Missing
-    optional dependencies (LangGraph, or the chosen provider SDK) are reported with an
-    actionable message rather than a raw traceback.
+    Selects the tier the environment configures (§3.6) and delegates to the injectable
+    ``cli.main``. Missing optional dependencies (LangGraph, or the chosen provider SDK) are
+    reported with an actionable message rather than a raw traceback.
     """
     _make_console_utf8_safe()
     _configure_logging()
@@ -149,15 +295,22 @@ def main(argv=None) -> int:
     exclude = _preparse_exclude(resolved_argv)
 
     try:
-        tools, session, memory = build_local_runtime(exclude=exclude)
+        runtime = select_runtime(exclude=exclude)
+    except MemoryUnavailableError as exc:
+        print(f"safesc: {exc}", file=sys.stderr)
+        return 2
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
         if exc.name and exc.name.split(".")[0] in _OPTIONAL_MODULE_EXTRAS:
             _explain_missing_extra(exc.name.split(".")[0])
             return 2
         raise
+    logging.getLogger("safesc").info("runtime tier: %s", runtime.tier)
 
     try:
-        return cli_main(argv, tools=tools, session=session, memory=memory)
+        return cli_main(
+            argv, tools=runtime.tools, session=runtime.session, memory=runtime.memory,
+            checkpointer=runtime.checkpointer,
+        )
     except MissingProviderSDKError as exc:
         # Raised by make_llm before the graph starts, so it reaches us instead of being
         # swallowed as a degraded specialist node (see llm_client.MissingProviderSDKError).
