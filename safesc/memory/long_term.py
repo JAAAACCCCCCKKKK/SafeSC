@@ -26,8 +26,10 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger("safesc.memory.long_term")
 
-# Column width is fixed by the embedding model (§3.2); pin per deployment. voyage-3-large
-# emits 1024-d vectors — change the model ⇒ re-index, not a hot swap.
+# Column width is fixed by the embedding model (§3.2); pin per deployment. voyage-4-large
+# defaults to 1024-d. Within the voyage-4 shared embedding space the tier may be changed at a
+# fixed width with no re-index; changing the width — or leaving the family (voyage-3, OpenAI,
+# Cohere) — still means a re-index, since those vectors are not comparable to these.
 DEFAULT_EMBEDDING_DIM = 1024
 
 # Records at or above this severity are the threat-intelligence asset kept indefinitely;

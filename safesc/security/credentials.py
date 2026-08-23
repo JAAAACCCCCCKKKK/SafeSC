@@ -19,7 +19,10 @@ PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-5",
     "openai": "gpt-4o",
 }
-DEFAULT_EMBEDDING_MODEL = "voyage-3-large"  # dimensionality follows the model (§3.2)
+# The voyage-4 family (voyage-4-large / voyage-4 / voyage-4-lite / voyage-4-nano) shares one
+# embedding space, so the *tier* is swappable at a fixed output dimension without re-embedding
+# the corpus (§3.2). Defaults to 1024-d — see long_term.DEFAULT_EMBEDDING_DIM.
+DEFAULT_EMBEDDING_MODEL = "voyage-4-large"
 
 
 class LLMCredentials(BaseModel):

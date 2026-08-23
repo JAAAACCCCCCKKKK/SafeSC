@@ -60,7 +60,7 @@ inputs:
     required: false
     default: ""
   embedding-model:
-    description: "Embedding model id (blank = voyage-3-large). Must match embedding-dim."
+    description: "Embedding model id (blank = voyage-4-large). Must match embedding-dim."
     required: false
     default: ""
   embedding-base-url:
@@ -70,7 +70,8 @@ inputs:
   embedding-dim:
     description: >-
       pgvector column width. MUST match the embedding model — changing it means a
-      re-index, not a hot swap. Blank = 1024 (voyage-3-large).
+      re-index, not a hot swap, even within the voyage-4 shared embedding space.
+      Blank = 1024 (the voyage-4 family default).
     required: false
     default: ""
   memory-strict:

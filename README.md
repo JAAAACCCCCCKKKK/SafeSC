@@ -93,8 +93,8 @@ To pin a specific **model** or route to a custom **endpoint**, add the optional 
 | `redis-url` | | — | Enables checkpointing, fleet-wide rate limiting, the signal cache and prior-verdict recall. See [Optional memory layer](#optional-memory-layer). |
 | `pgvector-dsn` | | — | Adds similarity search + fingerprint grounding. Requires `embedding-api-key`. |
 | `embedding-api-key` | | — | BYOK embedding key. Required whenever `pgvector-dsn` is set. Pass a secret. |
-| `embedding-model` / `embedding-base-url` | | Voyage | Embedding provider overrides. |
-| `embedding-dim` | | `1024` | pgvector column width. **Must** match the embedding model. |
+| `embedding-model` / `embedding-base-url` | | `voyage-4-large` | Embedding provider overrides. |
+| `embedding-dim` | | `1024` | pgvector column width. **Must** match the embedding model. Fixed at `store init`. |
 | `memory-strict` | | `false` | Fail if a configured store is unreachable, instead of auditing store-free. |
 | `store-init` | | `false` | Run `safesc store init` before auditing (needs DDL privileges; only needed once). |
 
@@ -182,10 +182,10 @@ parse) and `scan` (verify / signals).
 | `SAFESC_LLM_MODEL` | | Model id (blank = provider default). |
 | `SAFESC_LLM_BASE_URL` | | Override the LLM base URL. |
 | `SAFESC_EMBEDDING_API_KEY` | | Only if the optional memory layer is enabled. |
-| `SAFESC_EMBEDDING_BASE_URL` / `SAFESC_EMBEDDING_MODEL` | | Embedding provider overrides. |
+| `SAFESC_EMBEDDING_BASE_URL` / `SAFESC_EMBEDDING_MODEL` | | Embedding provider overrides (default `voyage-4-large`). |
 | `SAFESC_REDIS_URL` | | Enables the memory layer's short-term half — see below. |
 | `SAFESC_PGVECTOR_DSN` | | Enables the long-term half (also needs an embedding key). |
-| `SAFESC_EMBEDDING_DIM` | | Vector column width. **Must** match your embedding model. |
+| `SAFESC_EMBEDDING_DIM` | | Vector column width. **Must** match your embedding model. Fixed at `store init`. |
 | `SAFESC_MEMORY_STRICT` | | `1` = fail if a configured store is unreachable, instead of degrading. |
 | `SAFESC_HOST_CONCURRENCY` / `SAFESC_HOT_TTL_S` | | Per-registry concurrency (`10`) and cache TTL (7 days). |
 | `SAFESC_LOG_LEVEL` | | SafeSC's own log verbosity (default `INFO`; `DEBUG` traces LLM requests). |
@@ -219,6 +219,31 @@ safesc fingerprint load                       # once: ingest the shipped attack 
 safesc audit .                                # now cached + grounded
 safesc gc                                     # periodically: retention sweep (CronJob)
 ```
+
+#### Choosing the embedding model
+
+The default is **`voyage-4-large`** at **1024** dimensions. You are not locked to it — set
+`SAFESC_EMBEDDING_MODEL`, or point `SAFESC_EMBEDDING_BASE_URL` at any OpenAI-compatible
+`/embeddings` endpoint (OpenAI, Cohere, Google, a gateway, a local server) and SafeSC will
+use that instead.
+
+The reason for this particular default is that the whole voyage-4 family — `voyage-4-large`,
+`voyage-4`, `voyage-4-lite`, `voyage-4-nano` — **shares one embedding space**, so vectors
+written by one are directly comparable to vectors written by another. Moving between tiers
+to trade accuracy against cost is a config change, not a migration: your existing corpus
+stays valid and does not need re-embedding.
+
+Two things still do force a full re-index, because neither is covered by the shared space:
+
+- **Changing `SAFESC_EMBEDDING_DIM`.** The width is interpolated into the DDL as
+  `vector(N)` at `safesc store init`, so it is a schema change regardless of which model
+  wrote the vectors. Pick the width once, then move tiers freely at that width.
+- **Leaving the family** — voyage-3, OpenAI, Cohere. Those embedding spaces are unrelated
+  to voyage-4's, so old and new vectors are not comparable even at an identical width.
+
+To re-index: drop the table, re-run `safesc store init` with the new settings, and
+`safesc fingerprint load`. Prior verdicts are rebuilt by subsequent audits; the Redis half
+is unaffected, since exact-hash recall uses no embeddings at all.
 
 **This can only ever make SafeSC stricter, never more permissive.** Retrieved memory
 reaches the LLM as prior context that may raise concern but is structurally incapable of
