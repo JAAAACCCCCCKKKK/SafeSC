@@ -73,6 +73,9 @@ class MemoryConfig:
     top_k: int = 3
     escalate_floor: Severity = Severity.MEDIUM       # >= this counts as "ever escalated"
     hot_ttl_s: int = 7 * 24 * 3600                   # Redis hot-record TTL (§3.1)
+    # Texts per embedding request on the write path. Providers cap batch size
+    # (Voyage's limit is 128), so this chunks rather than sending one unbounded request.
+    embed_batch_size: int = 128
     # override to plug a deployment's real popularity signal (§2.7.4 write scope (b))
     is_high_popularity: Callable[[str, AuditState], bool] = field(default=None)  # type: ignore
 
@@ -151,8 +154,17 @@ class MemoryManager:
 
     def persist(self, state: AuditState, gate: GateDecision) -> PersistReport:
         """Single write point, called at the tail of report_agent. Best-effort: a store
-        failure is logged and skipped, never allowed to fail the gate."""
+        failure is logged and skipped, never allowed to fail the gate.
+
+        Two phases, because embedding is a *network* call and the rest is not. Phase 1
+        resolves max-wins and writes every hot Redis record; phase 2 embeds all pending
+        texts in batched calls and writes the vectors. Embedding per dependency issues one
+        request per dep (76 on a mid-size repo), which providers rate-limit aggressively
+        — a free-tier 3 RPM ceiling fails nearly all of them. ``Embedder`` is typed
+        ``list[str] -> list[list[float]]`` precisely so this can be one call.
+        """
         report = PersistReport()
+        pending: list[tuple[str, dict, str]] = []  # (key, record, text-to-embed)
         for dep in state.dependencies:
             dk = dep_key(dep)
             severity = gate.per_dep.get(dk, Severity.CLEAN)
@@ -162,11 +174,46 @@ class MemoryManager:
                 continue
             record = self._build_record(dk, key, severity, state)
             try:
-                self._upsert(key, record, report)
+                text = self._write_hot(key, record, report)
             except Exception as exc:
                 logger.warning("persist failed for %s: %s", key, exc)
                 report.skipped.append(key)
+                continue
+            report.written.append(key)
+            if text is not None:
+                pending.append((key, record, text))
+        self._write_vectors(pending)
         return report
+
+    def _write_vectors(self, pending: "list[tuple[str, dict, str]]") -> None:
+        """Embed the pending records in batches, then upsert each. Best-effort at batch
+        granularity: if a batch's embedding call fails, the hot Redis records already
+        written stand and only the vector half is lost — which costs grounding, never
+        correctness (§3.3)."""
+        if not pending or self.vector is None or self.embedder is None:
+            return
+        size = max(1, self.config.embed_batch_size)
+        for start in range(0, len(pending), size):
+            chunk = pending[start:start + size]
+            try:
+                vectors = self.embedder([text for _, _, text in chunk])
+            except Exception as exc:
+                logger.warning(
+                    "embedding failed for %d record(s) starting at %s: %s",
+                    len(chunk), chunk[0][0], exc,
+                )
+                continue
+            if len(vectors) != len(chunk):
+                logger.warning(
+                    "embedder returned %d vector(s) for %d text(s); skipping vector upsert",
+                    len(vectors), len(chunk),
+                )
+                continue
+            for (key, record, _), vec in zip(chunk, vectors):
+                try:
+                    self.vector.upsert(key, vec, record)
+                except Exception as exc:
+                    logger.warning("vector upsert failed for %s: %s", key, exc)
 
     def _should_persist(self, dk: str, severity: Severity, state: AuditState) -> bool:
         if severity >= self.config.escalate_floor:
@@ -195,25 +242,28 @@ class MemoryManager:
             "reasoning": (top.reasoning if top else "")[:1000],
         }
 
-    def _upsert(self, key: str, record: dict, report: PersistReport) -> None:
+    def _write_hot(self, key: str, record: dict, report: PersistReport) -> "Optional[str]":
+        """Resolve max-wins against any stored record and write the hot Redis entry.
+
+        Returns the text to embed when a vector store is configured, else None. Severity
+        is corrected on ``record`` in place, so the vector half persists the same severity
+        the hot half did.
+        """
         existing = self._get_any(key)
         if existing is not None:
             prev = int(existing.get("severity", 0))
             if record["severity"] < prev:
                 # immutable hash ⇒ severity should only rise; a decrease is an anomaly
-                report.anomalies.append(f"{key}: attempted {prev}→{record['severity']} (kept {prev})")
-                record = {**record, "severity": prev}  # max-wins: keep the higher
+                report.anomalies.append(
+                    f"{key}: attempted {prev}→{record['severity']} (kept {prev})"
+                )
+                record["severity"] = prev  # max-wins: keep the higher
         # hot exact record in Redis
         self._redis_set(key, record)
-        # long-term vector record (needs an embedding)
-        if self.vector is not None and self.embedder is not None:
-            text = record["summary"] + "\n" + record.get("reasoning", "")
-            try:
-                vec = self.embedder([text])[0]
-                self.vector.upsert(key, vec, record)
-            except Exception as exc:
-                logger.warning("vector upsert failed for %s: %s", key, exc)
-        report.written.append(key)
+        # the long-term vector record is written later, in one batched pass
+        if self.vector is None or self.embedder is None:
+            return None
+        return record["summary"] + "\n" + record.get("reasoning", "")
 
     # ------------------------------------------------------------------ maintenance
 

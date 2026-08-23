@@ -500,11 +500,15 @@ def plan_gate(state: AuditState, config: Optional[GateConfig] = None) -> GatePla
 # =============================================================================
 
 
-def gate_node(state: AuditState, config: Optional[GateConfig] = None) -> dict:
+def gate_node(state: AuditState, gate_config: Optional[GateConfig] = None) -> dict:
     """Writes the gate's escalation view into state (max-wins channel), plus any
     budget-truncation notes (§5.3). Fan-out itself is handled by gate_edge, not here;
     both call plan_gate and see the same deterministic cap."""
-    plan = plan_gate(state, config)
+    # NB: this parameter must NOT be named `config`. LangGraph inspects node signatures
+    # and treats a `config` parameter as its own RunnableConfig injection point, which
+    # both emits a UserWarning and makes correctness depend on functools.partial binding
+    # the name first. A distinct name keeps the two apart (§2.2-B).
+    plan = plan_gate(state, gate_config)
     dispatched = sorted({t.dep_key for t in plan.fan_out})
     # Diagnostic: explains *why* (how many) LLM calls happen — 0 dispatched means every
     # escalation came from a deterministic dimension (vulnerability/popularity) with no LLM
@@ -523,13 +527,13 @@ def gate_node(state: AuditState, config: Optional[GateConfig] = None) -> dict:
     return out
 
 
-def gate_edge(state: AuditState, config: Optional[GateConfig] = None):
+def gate_edge(state: AuditState, gate_config: Optional[GateConfig] = None):
     """Conditional-edge selector. Returns per-dep `Send`s to specialists for gray-zone
     deps, or routes straight to the scorer when nothing escalates. All deps reach the
     scorer regardless — clean deps need no node; their signals are already in state."""
     if Send is None:  # pragma: no cover
         raise RuntimeError("LangGraph is required to build the runnable graph; gate_edge needs Send.")
-    plan = plan_gate(state, config)
+    plan = plan_gate(state, gate_config)
     sends = [
         Send(SPECIALIST_NODE[t.dimension], {"task": t.model_dump()})
         for t in plan.fan_out
@@ -550,14 +554,14 @@ def add_spine(builder, tools: InjectedTools, config: Optional[GateConfig] = None
     builder.add_node(NODE_INDEX, functools.partial(index_node, tools=tools))
     builder.add_node(NODE_HASH_VERIFY, functools.partial(hash_verify_node, tools=tools))
     builder.add_node(NODE_CHEAP_SIGNALS, functools.partial(cheap_signals_node, tools=tools))
-    builder.add_node(NODE_GATE, functools.partial(gate_node, config=config))
+    builder.add_node(NODE_GATE, functools.partial(gate_node, gate_config=config))
 
     builder.add_edge(NODE_INDEX, NODE_HASH_VERIFY)
     builder.add_edge(NODE_HASH_VERIFY, NODE_CHEAP_SIGNALS)
     builder.add_edge(NODE_CHEAP_SIGNALS, NODE_GATE)
     builder.add_conditional_edges(
         NODE_GATE,
-        functools.partial(gate_edge, config=config),
+        functools.partial(gate_edge, gate_config=config),
         [*SPECIALIST_NODE.values(), NODE_REPORT],
     )
     return NODE_INDEX

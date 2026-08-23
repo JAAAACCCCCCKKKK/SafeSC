@@ -147,12 +147,12 @@ def build_graph(
     builder.add_node(NODE_INDEX, functools.partial(index_node, tools=tools))
     builder.add_node(NODE_HASH_VERIFY, functools.partial(hash_verify_node, tools=tools))
     builder.add_node(NODE_CHEAP_SIGNALS, functools.partial(cheap_signals_node, tools=tools))
-    builder.add_node(NODE_GATE, functools.partial(gate_node, config=config.gate))
+    builder.add_node(NODE_GATE, functools.partial(gate_node, gate_config=config.gate))
     builder.add_edge(NODE_INDEX, NODE_HASH_VERIFY)
     builder.add_edge(NODE_HASH_VERIFY, NODE_CHEAP_SIGNALS)
     builder.add_edge(NODE_CHEAP_SIGNALS, NODE_GATE)
     builder.add_conditional_edges(
-        NODE_GATE, functools.partial(gate_edge, config=config.gate),
+        NODE_GATE, functools.partial(gate_edge, gate_config=config.gate),
         [*SPECIALIST_NODE.values(), NODE_REPORT],
     )
 

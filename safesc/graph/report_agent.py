@@ -118,13 +118,17 @@ def score(state: AuditState, config: ScoreConfig | None = None) -> GateDecision:
     )
 
 
-def report_node(state: AuditState, config: ScoreConfig | None = None, memory=None) -> dict:
+def report_node(state: AuditState, score_config: ScoreConfig | None = None, memory=None) -> dict:
     """Terminal node: the sole writer of `gate_decision` (write-once channel, §2.6).
 
     If a Memory Manager is provided, this is also the single long-term write point
     (§2.7.4): persistence happens here, after the gate decision exists, never mid-run.
     It is best-effort — a store failure is swallowed so it can never fail the gate."""
-    decision = score(state, config)
+    # NB: this parameter must NOT be named `config`. LangGraph inspects node signatures
+    # and treats a `config` parameter as its own RunnableConfig injection point, which
+    # both emits a UserWarning and makes correctness depend on functools.partial binding
+    # the name first. A distinct name keeps the two apart (§2.4).
+    decision = score(state, score_config)
     if memory is not None:
         try:
             memory.persist(state, decision)
@@ -142,5 +146,5 @@ def add_report(builder, config: ScoreConfig | None = None, memory=None) -> str:
     owns its own node so graph assembly stays declarative. The inbound edges (from the
     gate and each specialist) and the edge to END are added by their respective owners
     before compile, so no LangGraph symbol is imported here."""
-    builder.add_node(NODE_REPORT, functools.partial(report_node, config=config, memory=memory))
+    builder.add_node(NODE_REPORT, functools.partial(report_node, score_config=config, memory=memory))
     return NODE_REPORT

@@ -282,23 +282,11 @@ scoped to a single audit — you pay for the store and get none of the four bene
 **managed store** reachable over the network (from GitHub-hosted runners) or a
 **self-hosted runner** beside your own instances.
 
-```yaml
-- uses: JAAAACCCCCCKKKK/SafeSC@v1
-  with:
-    llm-api-key:       ${{ secrets.SAFESC_LLM_API_KEY }}
-    llm-provider:      anthropic
-    redis-url:         ${{ secrets.SAFESC_REDIS_URL }}
-    pgvector-dsn:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
-    embedding-api-key: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
-```
-
-The `memory` extra is installed only when one of those is set, so consumers who do not use
-a store pay nothing for it. Gating behaviour is unchanged: the audit still exits `1` on a
-failing gate.
-
-Keep the one-time setup out of the audit workflow — re-ingesting the fingerprint corpus on
-every run just burns embedding calls rewriting identical rows. Run it once (or on a
-schedule) via `workflow_dispatch`:
+**Step 1 — one-time setup.** Do this *before* the first audit, in its own
+`workflow_dispatch` workflow. `store init` creates the pgvector schema; without it every
+audit logs `relation "safesc_memory" does not exist` and silently keeps no long-term
+memory. Keep it out of the audit workflow — re-ingesting the fingerprint corpus on every
+run just burns embedding calls rewriting identical rows.
 
 ```yaml
 - run: |
@@ -315,7 +303,39 @@ schedule) via `workflow_dispatch`:
     SAFESC_EMBEDDING_MODEL:   voyage-4-large
 ```
 
-`safesc gc` belongs on a nightly cron (or a Kubernetes CronJob), never inside an audit.
+**Step 2 — the audit workflow.** Once the schema exists, point the Action at the same
+stores:
+
+```yaml
+- uses: JAAAACCCCCCKKKK/SafeSC@v1
+  with:
+    llm-api-key:       ${{ secrets.SAFESC_LLM_API_KEY }}
+    llm-provider:      anthropic
+    redis-url:         ${{ secrets.SAFESC_REDIS_URL }}
+    pgvector-dsn:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
+    embedding-api-key: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+```
+
+The `memory` extra is installed only when one of those is set, so consumers who do not use
+a store pay nothing for it. Gating behaviour is unchanged: the audit still exits `1` on a
+failing gate.
+
+If you would rather not run step 1 separately, the Action's `store-init: true` input runs
+`safesc store init` before the audit — but it needs DDL privileges on every run, so a
+dedicated setup workflow is the better default.
+
+**Step 3 — maintenance.** `safesc gc` belongs on a nightly cron (or a Kubernetes CronJob),
+never inside an audit.
+
+Two things that are *not* SafeSC bugs when you see them in the log:
+
+- `Command is not available: 'FT.INFO'` — your Redis has no RediSearch module (Upstash and
+  most managed Redis do not). Only the LangGraph checkpointer needs it, so `--resume` is
+  unavailable; the cache, semaphores and exact-hash recall use plain commands and are
+  unaffected.
+- A store that is configured but unreachable prints a warning and the audit continues
+  store-free. That is deliberate (§3.3). Set `memory-strict: true` / `SAFESC_MEMORY_STRICT=1`
+  if a silently store-free audit should instead be a hard failure.
 
 ---
 

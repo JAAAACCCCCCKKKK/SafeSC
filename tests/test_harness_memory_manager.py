@@ -245,3 +245,93 @@ def test_gc_no_vector_is_noop():
     mgr = MemoryManager()
     out = mgr.gc()
     assert out["deleted"] == 0
+
+
+# ---- batched embedding on the write path ----
+
+
+class CountingEmbedder:
+    """Records each call's batch size so a test can assert request *count*, not just output."""
+
+    def __init__(self):
+        self.calls: list[int] = []
+
+    def __call__(self, texts):
+        self.calls.append(len(texts))
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+
+def _multi_dep_state(n):
+    deps = [_dep(name=f"pkg{i}", h=f"sha512-{i}") for i in range(n)]
+    st = AuditState()
+    st.dependencies = deps
+    st.signals = [
+        Signal(
+            dep_key=f"npm:pkg{i}@1.3.0",
+            dimension=TrustDimension.BEHAVIOR,
+            origin=SignalOrigin.STATIC,
+            source="stage3.test",
+            severity=Severity.HIGH,
+            summary=f"sig {i}",
+            reasoning="because",
+        )
+        for i in range(n)
+    ]
+    gate = GateDecision(per_dep={f"npm:pkg{i}@1.3.0": Severity.HIGH for i in range(n)})
+    return st, gate
+
+
+def test_persist_embeds_in_one_batched_call_not_one_per_dep():
+    """The write path must not issue an embedding request per dependency: providers
+    rate-limit hard (a free tier is 3 RPM), so 20 deps became 20 failing calls."""
+    st, gate = _multi_dep_state(20)
+    vec, emb = FakeVector(), CountingEmbedder()
+    mgr = MemoryManager(redis=FakeRedis(), vector=vec, embedder=emb)
+
+    report = mgr.persist(st, gate)
+
+    assert emb.calls == [20], f"expected one 20-text call, got {emb.calls}"
+    assert len(vec.upserts) == 20
+    assert len(report.written) == 20
+
+
+def test_persist_chunks_to_the_configured_batch_size():
+    st, gate = _multi_dep_state(7)
+    vec, emb = FakeVector(), CountingEmbedder()
+    mgr = MemoryManager(redis=FakeRedis(), vector=vec, embedder=emb,
+                        config=MemoryConfig(embed_batch_size=3))
+
+    mgr.persist(st, gate)
+
+    assert emb.calls == [3, 3, 1]
+    assert len(vec.upserts) == 7
+
+
+def test_persist_survives_a_failing_embedder_and_keeps_hot_records():
+    """An embedding outage costs grounding, never correctness (§3.3): the Redis hot
+    records still land and the gate is untouched."""
+    def boom(texts):
+        raise RuntimeError("rate limited")
+
+    st, gate = _multi_dep_state(5)
+    vec, r = FakeVector(), FakeRedis()
+    mgr = MemoryManager(redis=r, vector=vec, embedder=boom)
+
+    report = mgr.persist(st, gate)
+
+    assert vec.upserts == []                 # vector half lost
+    assert len(report.written) == 5          # hot half kept
+    assert len(r.store) == 5
+
+
+def test_persist_skips_vector_upsert_on_embedder_length_mismatch():
+    def short(texts):
+        return [[0.1, 0.2, 0.3]]            # one vector for many texts
+
+    st, gate = _multi_dep_state(4)
+    vec = FakeVector()
+    mgr = MemoryManager(redis=FakeRedis(), vector=vec, embedder=short)
+
+    mgr.persist(st, gate)
+
+    assert vec.upserts == []
