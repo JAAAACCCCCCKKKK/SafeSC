@@ -177,8 +177,8 @@ parse) and `scan` (verify / signals).
 
 | Variable | Required | Description |
 |---|---|---|
-| `SAFESC_LLM_API_KEY` | ✅ | BYOK reasoning-LLM key. |
-| `SAFESC_LLM_PROVIDER` | ✅ | `anthropic` or `openai` — required, no default. |
+| `SAFESC_LLM_API_KEY` | audit / query | BYOK reasoning-LLM key. Not read by `gc`, `store init` or `fingerprint load`. |
+| `SAFESC_LLM_PROVIDER` | audit / query | `anthropic` or `openai` — no default. Same exemption as above. |
 | `SAFESC_LLM_MODEL` | | Model id (blank = provider default). |
 | `SAFESC_LLM_BASE_URL` | | Override the LLM base URL. |
 | `SAFESC_EMBEDDING_API_KEY` | | Only if the optional memory layer is enabled. |
@@ -190,6 +190,26 @@ parse) and `scan` (verify / signals).
 | `SAFESC_HOST_CONCURRENCY` / `SAFESC_HOT_TTL_S` | | Per-registry concurrency (`10`) and cache TTL (7 days). |
 | `SAFESC_LOG_LEVEL` | | SafeSC's own log verbosity (default `INFO`; `DEBUG` traces LLM requests). |
 | `SAFESC_DEEP_CACHE` | | Directory for Stage-4 clone/extract scratch data (default: system temp). |
+
+Only `audit` and `query` need an LLM key. The three maintenance commands — `gc`,
+`store init`, `fingerprint load` — return before any reasoning credential is read, so a
+CronJob can hold a store/embedding key alone and no reasoning key at all.
+
+The last four rows have **no Action input**, by design: they are tuning and debugging
+knobs rather than deployment wiring. They still work from a workflow, because a composite
+action inherits job-level environment and the Action's own `env:` block does not name
+them:
+
+```yaml
+env:                        # job level — passes through to the Action
+  SAFESC_LOG_LEVEL: DEBUG
+  SAFESC_HOST_CONCURRENCY: "4"
+steps:
+  - uses: JAAAACCCCCCKKKK/SafeSC@v1
+    with:
+      llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
+      llm-provider: anthropic
+```
 
 ---
 
@@ -288,6 +308,11 @@ schedule) via `workflow_dispatch`:
   env:
     SAFESC_PGVECTOR_DSN:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
     SAFESC_EMBEDDING_API_KEY: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+    # Both MUST match what the audit workflow uses. `store init` bakes the width into the
+    # column as vector(N); omit it and you get vector(1024) whatever your model emits, and
+    # every later insert fails on a dimension mismatch.
+    SAFESC_EMBEDDING_DIM:     "1024"
+    SAFESC_EMBEDDING_MODEL:   voyage-4-large
 ```
 
 `safesc gc` belongs on a nightly cron (or a Kubernetes CronJob), never inside an audit.
