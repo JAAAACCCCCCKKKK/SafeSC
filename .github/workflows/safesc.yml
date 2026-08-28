@@ -48,6 +48,8 @@ jobs:
         if: steps.guard.outputs.ready == 'true'
         id: safesc
         uses: ./ # in a consumer repo: JAAAACCCCCCKKKK/SafeSC@v1
+        env:
+          SAFESC_LOG_LEVEL: "DEBUG"
         with:
           target: "."
           llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
