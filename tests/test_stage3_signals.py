@@ -879,7 +879,7 @@ class TestArchivedRepoCollector:
     def test_dimension(self):
         assert self.c.dimension == Dimension.POPULARITY
 
-    def _patch(self, meta, repo):
+    def _patch(self, meta, repo, pkg=None):
         return (
             patch(
                 "safesc.tools.scan.signals.popularity.archived.get_registry_metadata",
@@ -889,14 +889,18 @@ class TestArchivedRepoCollector:
                 "safesc.tools.scan.signals.popularity.archived.get_repo",
                 new=AsyncMock(return_value=repo),
             ),
+            patch(
+                "safesc.tools.scan.signals.popularity.archived.get_package_metadata",
+                new=AsyncMock(return_value=pkg),
+            ),
         )
 
     async def test_archived_flags_high(self):
         from safesc.tools.scan.signals.github import GitHubRepo
 
         repo = GitHubRepo(owner="a", repo="b", archived=True, stars=5)
-        p_meta, p_repo = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
-        with p_meta, p_repo:
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
+        with p_meta, p_repo, p_pkg:
             sigs = await self.c.collect(_dep(), MagicMock())
         assert len(sigs) == 1
         assert sigs[0].code == "popularity.repo_archived"
@@ -906,20 +910,68 @@ class TestArchivedRepoCollector:
         from safesc.tools.scan.signals.github import GitHubRepo
 
         repo = GitHubRepo(owner="a", repo="b", archived=False, stars=100)
-        p_meta, p_repo = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
-        with p_meta, p_repo:
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
+        with p_meta, p_repo, p_pkg:
             assert await self.c.collect(_dep(), MagicMock()) == []
 
     async def test_no_repo_url_no_signal(self):
-        p_meta, p_repo = self._patch(RegistryMetadata(repo_url=None), None)
-        with p_meta, p_repo:
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata(repo_url=None), None)
+        with p_meta, p_repo, p_pkg:
             assert await self.c.collect(_dep(), MagicMock()) == []
 
     async def test_non_github_repo_no_signal(self):
         # get_repo returns None for non-GitHub hosts.
-        p_meta, p_repo = self._patch(RegistryMetadata("https://gitlab.com/a/b"), None)
-        with p_meta, p_repo:
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata("https://gitlab.com/a/b"), None)
+        with p_meta, p_repo, p_pkg:
             assert await self.c.collect(_dep(), MagicMock()) == []
+
+    async def test_still_publishing_after_archive_stays_high(self):
+        # Comprehensive evaluation: a release shipped *after* the repo's last recorded
+        # push is the highest-risk case (unwatched source, active releases) — stays HIGH
+        # with the richer evidence attached.
+        from safesc.tools.scan.signals.github import GitHubRepo
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        repo = GitHubRepo(owner="a", repo="b", archived=True, stars=5, pushed_at="2024-01-01T00:00:00Z")
+        pkg = PackageMetadata(latest_release_at="2024-06-01T00:00:00Z", total_releases=12)
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata("https://github.com/a/b"), repo, pkg)
+        with p_meta, p_repo, p_pkg:
+            sigs = await self.c.collect(_dep(), MagicMock())
+        assert len(sigs) == 1
+        assert sigs[0].severity == Severity.HIGH
+        assert "still_publishing_after_archive=true" in sigs[0].evidence
+        assert "still active" in sigs[0].message.lower() or "active while" in sigs[0].message.lower()
+
+    async def test_quiet_since_archive_downgrades_to_medium(self):
+        # No release since around when the repo went dark — ordinary abandonment, not
+        # an active risk, so severity is downgraded rather than left at HIGH.
+        from safesc.tools.scan.signals.github import GitHubRepo
+        from safesc.tools.scan.signals.registry_meta import PackageMetadata
+
+        repo = GitHubRepo(owner="a", repo="b", archived=True, stars=5, pushed_at="2024-06-01T00:00:00Z")
+        pkg = PackageMetadata(latest_release_at="2024-01-01T00:00:00Z", total_releases=12)
+        p_meta, p_repo, p_pkg = self._patch(RegistryMetadata("https://github.com/a/b"), repo, pkg)
+        with p_meta, p_repo, p_pkg:
+            sigs = await self.c.collect(_dep(), MagicMock())
+        assert len(sigs) == 1
+        assert sigs[0].severity == Severity.MEDIUM
+        assert "still_publishing_after_archive=false" in sigs[0].evidence
+
+    async def test_package_metadata_failure_degrades_to_high(self):
+        # The comprehensive check is additive-only: if it can't be evaluated (missing
+        # timestamps, or the fetch itself raises), the base signal must not weaken.
+        from safesc.tools.scan.signals.github import GitHubRepo
+
+        repo = GitHubRepo(owner="a", repo="b", archived=True, stars=5, pushed_at="2024-01-01T00:00:00Z")
+        p_meta, p_repo, _ = self._patch(RegistryMetadata("https://github.com/a/b"), repo)
+        p_pkg = patch(
+            "safesc.tools.scan.signals.popularity.archived.get_package_metadata",
+            new=AsyncMock(side_effect=RuntimeError("registry unavailable")),
+        )
+        with p_meta, p_repo, p_pkg:
+            sigs = await self.c.collect(_dep(), MagicMock())
+        assert len(sigs) == 1
+        assert sigs[0].severity == Severity.HIGH
 
 
 # ---------------------------------------------------------------------------
