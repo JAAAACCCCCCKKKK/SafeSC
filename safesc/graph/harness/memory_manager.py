@@ -98,13 +98,28 @@ class MemoryManager:
 
     def read_context(self, artifact_key: str, query_text: str = "") -> MemoryContext:
         exact = self._redis_get(artifact_key)
+        logger.debug(
+            "memory read: exact %s for %s%s",
+            "hit" if exact is not None else "miss",
+            artifact_key,
+            f" (severity={exact.get('severity')})" if exact is not None else "",
+        )
         similar: tuple[dict, ...] = ()
-        if self.vector is not None and self.embedder is not None and query_text:
+        if self.vector is None or self.embedder is None or not query_text:
+            logger.debug(
+                "memory read: similarity skipped for %s (vector=%s embedder=%s query_text=%s)",
+                artifact_key, self.vector is not None, self.embedder is not None, bool(query_text),
+            )
+        else:
             try:
                 vec = self.embedder([query_text])[0]
                 hits = self.vector.query_similar(vec, self.config.top_k) or []
                 # never return the exact record twice
                 similar = tuple(h for h in hits if h.get("artifact_id") != artifact_key)
+                logger.debug(
+                    "memory read: %d similar record(s) for %s (top_k=%d, %d raw hit(s))",
+                    len(similar), artifact_key, self.config.top_k, len(hits),
+                )
             except Exception as exc:
                 logger.warning("similarity query failed for %s: %s", artifact_key, exc)
         return MemoryContext(artifact_id=artifact_key, exact=exact, similar=similar)
@@ -145,6 +160,10 @@ class MemoryManager:
         def _lookup(dep_key_str: str, *, task=None) -> list[str]:
             dep = getattr(task, "dependency", None) if task is not None else None
             if dep is None:
+                logger.debug(
+                    "memory read: no task supplied for %s; falling back to dep_key lookup "
+                    "(exact-hash recall degrades for hashed deps)", dep_key_str,
+                )
                 return self.read_context(str(dep_key_str), "").as_prior_findings()
             return self.read_context(artifact_id(dep), _query_text(task)).as_prior_findings()
 
@@ -170,6 +189,7 @@ class MemoryManager:
             severity = gate.per_dep.get(dk, Severity.CLEAN)
             key = artifact_id(dep)
             if not self._should_persist(dk, severity, state):
+                logger.debug("memory write: skipping %s (severity=%s, below write scope)", key, severity)
                 report.skipped.append(key)
                 continue
             record = self._build_record(dk, key, severity, state)
@@ -180,9 +200,19 @@ class MemoryManager:
                 report.skipped.append(key)
                 continue
             report.written.append(key)
+            logger.debug(
+                "memory write: hot record %s severity=%s (vector pending=%s)",
+                key, record["severity"], text is not None,
+            )
             if text is not None:
                 pending.append((key, record, text))
         self._write_vectors(pending)
+        logger.info(
+            "memory persist: %d written, %d skipped, %d anomaly(ies)",
+            len(report.written), len(report.skipped), len(report.anomalies),
+        )
+        for anomaly in report.anomalies:
+            logger.warning("memory anomaly: %s", anomaly)
         return report
 
     def _write_vectors(self, pending: "list[tuple[str, dict, str]]") -> None:
@@ -191,9 +221,11 @@ class MemoryManager:
         written stand and only the vector half is lost — which costs grounding, never
         correctness (§3.3)."""
         if not pending or self.vector is None or self.embedder is None:
+            logger.debug("memory write: no vectors to embed (%d record(s) pending)", len(pending))
             return
         size = max(1, self.config.embed_batch_size)
-        for start in range(0, len(pending), size):
+        batches = -(-len(pending) // size)  # ceil div, for the log line only
+        for i, start in enumerate(range(0, len(pending), size), start=1):
             chunk = pending[start:start + size]
             try:
                 vectors = self.embedder([text for _, _, text in chunk])
@@ -209,11 +241,17 @@ class MemoryManager:
                     len(vectors), len(chunk),
                 )
                 continue
+            upserted = 0
             for (key, record, _), vec in zip(chunk, vectors):
                 try:
                     self.vector.upsert(key, vec, record)
+                    upserted += 1
                 except Exception as exc:
                     logger.warning("vector upsert failed for %s: %s", key, exc)
+            logger.debug(
+                "memory write: batch %d/%d embedded and upserted %d/%d record(s)",
+                i, batches, upserted, len(chunk),
+            )
 
     def _should_persist(self, dk: str, severity: Severity, state: AuditState) -> bool:
         if severity >= self.config.escalate_floor:
