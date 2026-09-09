@@ -1,0 +1,120 @@
+# One-time (and re-runnable) setup for SafeSC's optional long-term memory layer.
+# See README "Optional memory layer -> Using it from CI", CLAUDE.md §3.2 / §3.4 / §3.6.
+#
+# Manual only. This is deliberately NOT part of the audit workflow:
+#   * `store init` needs DDL privileges, which an audit run must never require;
+#   * `fingerprint load` re-embeds the whole corpus, so running it per push would burn
+#     embedding calls rewriting identical rows;
+#   * `gc` is a separate finite maintenance job (§3.4), never triggered by a graph node.
+#
+# Run it once before the first pgvector-backed audit, and again after changing the
+# embedding model family or dimension (both of which are a re-index, not a hot swap).
+#
+# Required repository secrets:
+#   SAFESC_PGVECTOR_DSN        Postgres/pgvector DSN (must outlive the job -- managed
+#                              instance or self-hosted runner, not a `services:` container)
+#   SAFESC_EMBEDDING_API_KEY   BYOK embedding-provider key (Voyage by default)
+# Optional repository variables, shared with safesc.yml so the two cannot drift:
+#   SAFESC_EMBEDDING_MODEL     default voyage-4-large
+#   SAFESC_EMBEDDING_DIM       default 1024 -- MUST match the model; baked into the
+#                              column as vector(N) by `store init`
+#
+# No reasoning-LLM key is needed: these subcommands touch only the stores and return
+# before any reasoning credential is read (§3.5).
+
+name: SafeSC store setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      store-init:
+        description: "Run `safesc store init` (create the pgvector extension, table and ANN index)."
+        type: boolean
+        default: true
+      fingerprint-load:
+        description: "Run `safesc fingerprint load` (ingest the curated known-attack corpus)."
+        type: boolean
+        default: true
+      gc:
+        description: "Run `safesc gc` (§3.4 differentiated retention). Off by default; normally a nightly cron."
+        type: boolean
+        default: false
+      python-version:
+        description: "Python version used to run SafeSC."
+        type: string
+        default: "3.12"
+
+permissions:
+  contents: read
+
+# Serialise: these write schema and corpus rows, so two concurrent runs would race on DDL.
+concurrency:
+  group: safesc-store-setup
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    env:
+      SAFESC_PGVECTOR_DSN: ${{ secrets.SAFESC_PGVECTOR_DSN }}
+      SAFESC_EMBEDDING_API_KEY: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+      SAFESC_EMBEDDING_MODEL: ${{ vars.SAFESC_EMBEDDING_MODEL || 'voyage-4-large' }}
+      SAFESC_EMBEDDING_DIM: ${{ vars.SAFESC_EMBEDDING_DIM || '1024' }}
+      SAFESC_EMBEDDING_BASE_URL: ${{ vars.SAFESC_EMBEDDING_BASE_URL }}
+      # Strict here, unlike the audit workflow. Degrading to store-free is the right call
+      # for an audit (memory can only escalate, §3.3) but is exactly wrong for a job whose
+      # entire purpose is to write to the store: a silent no-op would look like success.
+      SAFESC_MEMORY_STRICT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check store secrets are configured
+        shell: bash
+        run: |
+          missing=0
+          if [ -z "$SAFESC_PGVECTOR_DSN" ]; then
+            echo "::error::SAFESC_PGVECTOR_DSN secret is not set; there is no long-term store to set up."
+            missing=1
+          fi
+          if [ -z "$SAFESC_EMBEDDING_API_KEY" ]; then
+            echo "::error::SAFESC_EMBEDDING_API_KEY secret is not set; the pgvector half needs an embedding key."
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      # No LLM provider SDK: nothing here reasons. `agent` is needed because the runtime
+      # builder constructs the tool seams, `memory` for the Redis/pgvector/embedding
+      # clients (all lazily imported, §0.1).
+      - name: Install SafeSC
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[agent,memory]"
+
+      - name: Report configuration
+        shell: bash
+        run: |
+          echo "embedding model: ${SAFESC_EMBEDDING_MODEL}"
+          echo "embedding dim:   ${SAFESC_EMBEDDING_DIM} (must match safesc.yml's embedding-dim)"
+
+      # Idempotent (CREATE ... IF NOT EXISTS), but it fixes the column width as
+      # vector(SAFESC_EMBEDDING_DIM) the first time. Changing the width later means
+      # dropping the table and re-running this workflow, then re-loading fingerprints.
+      - name: safesc store init
+        if: inputs.store-init
+        run: safesc store init
+
+      # The only writer of kind='fingerprint' records -- no audit run can create one
+      # (§3.2). Re-running upserts the same ids, so it is safe but not free.
+      - name: safesc fingerprint load
+        if: inputs.fingerprint-load
+        run: safesc fingerprint load
+
+      - name: safesc gc
+        if: inputs.gc
+        run: safesc gc

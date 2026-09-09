@@ -1,17 +1,45 @@
-# Example CI gate using the SafeSC action.
+# Example CI gate using the SafeSC action, in its memory-backed (tier-3) form.
 #
 # Copy this into a *consumer* repo and change the `uses:` line to a pinned ref, e.g.:
 #     uses: JAAAACCCCCCKKKK/SafeSC@v1
 # Then add a repository secret named SAFESC_LLM_API_KEY (your BYOK LLM key).
 #
-# In this repo it is manual-only (workflow_dispatch) and self-guards on the secret, so it
-# never fails CI when no key is configured. Uncomment the pull_request/push triggers in a
-# consumer repo to gate merges.
+# The optional memory layer (README "Optional memory layer", CLAUDE.md §3.6) is wired
+# below and is entirely secret-driven:
+#
+#   * no store secrets set          -> tier 2, store-free. Identical to the old workflow.
+#   * SAFESC_REDIS_URL              -> tier 3 (Redis): checkpointing, fleet-wide
+#                                      per-registry rate limiting, the 7-day cross-run
+#                                      cheap-signal cache, exact-hash verdict recall.
+#                                      Needs no second API key.
+#   * + SAFESC_PGVECTOR_DSN
+#     + SAFESC_EMBEDDING_API_KEY    -> adds similarity search over prior findings and the
+#                                      known-attack fingerprint corpus.
+#
+# The store must OUTLIVE the job, so use a managed Redis/Postgres or a self-hosted runner
+# beside your own instances -- a `services:` container is recreated per job and buys none
+# of the four benefits.
+#
+# Run `.github/workflows/safesc-store-setup.yml` (workflow_dispatch) ONCE before the first
+# pgvector-backed audit: it creates the schema and ingests the fingerprint corpus. Doing
+# that here instead would need DDL privileges on every run and would re-embed identical
+# rows on every push.
+#
+# In this repo the audit self-guards on the LLM secret, so it never fails CI when no key
+# is configured. Uncomment the pull_request/push triggers in a consumer repo to gate
+# merges.
 
 name: SafeSC
 
 on:
   workflow_dispatch:
+    inputs:
+      memory-strict:
+        description: >-
+          Fail the run if a configured store is unreachable, instead of auditing
+          store-free. Handy for verifying store wiring by hand.
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -33,17 +61,34 @@ jobs:
       - name: Check BYOK key is configured
         id: guard
         shell: bash
+        env:
+          # Secrets reach the script through the environment, never by `${{ }}` interpolation
+          # into the `run:` body -- a DSN or key containing shell metacharacters would
+          # otherwise be executed rather than compared. (Same rule action.yml follows.)
+          LLM_KEY: ${{ secrets.SAFESC_LLM_API_KEY }}
+          REDIS_URL: ${{ secrets.SAFESC_REDIS_URL }}
+          PGVECTOR_DSN: ${{ secrets.SAFESC_PGVECTOR_DSN }}
         run: |
-          if [ -n "${{ secrets.SAFESC_LLM_API_KEY }}" ]; then
+          if [ -n "$LLM_KEY" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice::SAFESC_LLM_API_KEY secret not set; skipping the audit gate."
           fi
+          # Purely informational: say which tier this run will use, so a missing store
+          # secret shows up in the log instead of as a silently store-free audit.
+          if [ -n "$PGVECTOR_DSN" ]; then
+            echo "::notice::SafeSC memory layer: pgvector configured (similarity + fingerprint grounding)."
+          elif [ -n "$REDIS_URL" ]; then
+            echo "::notice::SafeSC memory layer: Redis only (cache, semaphores, exact-hash recall)."
+          else
+            echo "::notice::SafeSC memory layer: not configured; auditing store-free (tier 2)."
+          fi
 
-      # One step: the action installs SafeSC, runs the gate, uploads SARIF to code
-      # scanning, and archives the report artifacts. Consumers only add the job-level
-      # `permissions` above and the SAFESC_LLM_API_KEY secret.
+      # One step: the action installs SafeSC (adding the `memory` extra only when a store
+      # is configured), runs the gate, uploads SARIF to code scanning, and archives the
+      # report artifacts. Consumers only add the job-level `permissions` above and the
+      # secrets they want.
       - name: Dependency audit gate
         if: steps.guard.outputs.ready == 'true'
         id: safesc
@@ -57,3 +102,22 @@ jobs:
           # Optional: pin a model / endpoint.
           # llm-model: gpt-4o
           # llm-base-url: https://your-openai-compatible-endpoint/v1
+
+          # --- optional memory layer -------------------------------------------------
+          # Blank secrets are ignored by select_runtime, so an unset secret is exactly
+          # the store-free path; there is nothing to comment out.
+          redis-url: ${{ secrets.SAFESC_REDIS_URL }}
+          pgvector-dsn: ${{ secrets.SAFESC_PGVECTOR_DSN }}
+          embedding-api-key: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
+          # These two MUST match what safesc-store-setup.yml used: `store init` bakes the
+          # width into the column as vector(N), and a mismatch fails every insert. Both
+          # workflows read the same repository variables so they cannot drift apart.
+          embedding-model: ${{ vars.SAFESC_EMBEDDING_MODEL || 'voyage-4-large' }}
+          embedding-dim: ${{ vars.SAFESC_EMBEDDING_DIM || '1024' }}
+          # Off by default: memory can only escalate a verdict, never lower one (§3.3),
+          # so an unreachable store is safe to degrade past. Flip it via workflow_dispatch
+          # when you are specifically testing the store wiring.
+          memory-strict: ${{ inputs.memory-strict || false }}
+          # Left false on purpose -- schema creation lives in the manual setup workflow so
+          # an audit never needs DDL privileges.
+          store-init: "false"
