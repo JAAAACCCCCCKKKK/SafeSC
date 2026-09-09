@@ -88,6 +88,18 @@ inputs:
     required: false
     default: "false"
 
+  github-token:
+    description: >-
+      Token used to authenticate SafeSC's GitHub REST calls (Stage-3 popularity signals:
+      repo archived status, stars, last push). Defaults to the job's own GITHUB_TOKEN,
+      which is all this needs. Authenticating matters more than it looks: anonymous API
+      access is 60 requests/hour per IP, shared across GitHub-hosted runners, so a repo
+      of any size exhausts it and the archived-repo check silently returns nothing on
+      every run. Popularity is re-collected each run by design (§3.1), so an anonymous
+      audit loses that signal permanently rather than once. Override only to supply a PAT.
+    required: false
+    default: ${{ github.token }}
+
   report-dir:
     description: "Directory to write JSON / Markdown / SARIF report artifacts."
     required: false
@@ -223,6 +235,10 @@ runs:
         # Values reach the script through the environment, never by `${{ }}` interpolation
         # into the `run:` body — a DSN, key or pattern containing shell metacharacters would
         # otherwise be executed rather than passed.
+        # Lifts the GitHub API rate limit from 60/hour (anonymous, per runner IP) to
+        # 1000/hour. Read by tools/scan/signals/github.py, whose single call site targets
+        # a hardcoded api.github.com URL, so the token never reaches another host.
+        GITHUB_TOKEN: ${{ inputs.github-token }}
         EXCLUDE_PATTERNS: ${{ inputs.exclude }}
         TARGET: ${{ inputs.target }}
         REPORT_DIR: ${{ inputs.report-dir }}

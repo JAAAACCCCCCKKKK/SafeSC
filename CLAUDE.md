@@ -559,6 +559,16 @@ Resolved in v2.13 (coded):
   caller are byte-identical. Pinned by `test_memory_reuse.py` (degraded run writes nothing, and does
   not poison a later healthy run) and `test_stage3_signals.py::TestDegradationIsReported` (including
   one test against the *real* session, so the instrumentation cannot be removed unnoticed).
+- [x] **GitHub API rate limiting — found by the above, on its first run.** The new warning
+  immediately surfaced ten `ArchivedRepoCollector` degradations against `api.github.com` that
+  the previous run had shown as nothing at all. Cause was configuration, not code:
+  `signals/github.py` has read `GITHUB_TOKEN`/`GH_TOKEN` since v1, but `action.yml` never set
+  it, so every audit ran anonymous at 60 requests/hour *per runner IP*. Fixed with a
+  `github-token` input defaulting to `${{ github.token }}` (1000/hour). Worth doing rather
+  than tolerating: popularity is deliberately never cached (§3.1), so an anonymous audit lost
+  the archived-repo signal on *every* run, and it failed toward cleaner. Note the completeness
+  gate behaved exactly as specified here — popularity is not a cacheable dimension, so these
+  degradations correctly did **not** suppress any cache write.
 
 Still open:
 - [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target

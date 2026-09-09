@@ -86,6 +86,7 @@ To pin a specific **model** or route to a custom **endpoint**, add the optional 
 | `exclude` | | — | Gitignore-syntax patterns to exclude from discovery, one per line. See [Excluding paths](#excluding-paths). |
 | `format` | | `all` | Report format(s): `all` \| `json` \| `markdown` \| `sarif`. |
 | `report-dir` | | `safesc-reports` | Directory to write JSON / Markdown / SARIF artifacts. |
+| `github-token` | | `${{ github.token }}` | Authenticates SafeSC's GitHub API calls (Stage-3 popularity signals). The default is right for nearly everyone — see [GitHub API rate limits](#github-api-rate-limits). |
 | `python-version` | | `3.12` | Python version used to run SafeSC. |
 | `upload-sarif` | | `true` | Upload the SARIF report to GitHub code scanning. |
 | `upload-artifact` | | `true` | Archive `report-dir` as a build artifact. |
@@ -213,6 +214,30 @@ steps:
 
 ---
 
+## GitHub API rate limits
+
+Stage 3's popularity collectors call the GitHub REST API (archived status, stars, last
+push). **Anonymous access is 60 requests/hour per IP, shared across GitHub-hosted
+runners**, so any real dependency tree exhausts it and you will see:
+
+```
+WARNING:safesc.tools.scan.signals.collector:collector ArchivedRepoCollector degraded for
+  <pkg>: 1 unanswered request(s), first=https://api.github.com/repos/<owner>/<repo>
+```
+
+The Action authenticates with the job's own `GITHUB_TOKEN` by default (1000 requests/hour),
+so this should not appear. If it does, either `github-token` was explicitly set to an empty
+value, or you are running the CLI outside Actions -- export `GITHUB_TOKEN` (or `GH_TOKEN`)
+there too.
+
+This is worth fixing rather than ignoring. Popularity is deliberately **not** cached (§3.1
+-- an archived repo is exactly the fact that changes under a pinned version), so it is
+re-collected on every run: an unauthenticated audit loses the signal on every run, not once.
+It fails toward *cleaner*, which is why the collector now warns instead of degrading
+silently.
+
+---
+
 ## Optional memory layer
 
 SafeSC runs fine with no external stores, and that is the default — a CI audit is a single
@@ -329,8 +354,9 @@ never inside an audit.
 
 Two things that are *not* SafeSC bugs when you see them in the log:
 
-- `Command is not available: 'FT.INFO'` — your Redis has no RediSearch module (Upstash and
-  most managed Redis do not). Only the LangGraph checkpointer needs it, so `--resume` is
+- `Command is not available: 'FT.INFO'`, or `Upstash Redis does not support FT.* commands.
+  Use SEARCH.* commands instead` — your Redis has no RediSearch module (Upstash and most
+  managed Redis do not). Only the LangGraph checkpointer needs it, so `--resume` is
   unavailable; the cache, semaphores and exact-hash recall use plain commands and are
   unaffected.
 - A store that is configured but unreachable prints a warning and the audit continues
