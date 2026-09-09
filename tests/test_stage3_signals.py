@@ -1301,3 +1301,115 @@ class TestSessionCache:
         second = await sess.get_json("https://x/y")
         assert first == second
         assert calls["n"] == 1  # second call served from cache
+
+
+class TestDegradationIsReported:
+    """A collector that could not see the registry must say so (CLAUDE.md §3.1, §8).
+
+    This is the layer the bug lived at: `RateLimitedSession` returns None on an exhausted
+    retry just as it does on a 404, so the collector takes its ordinary "no metadata"
+    early return and emits []. No exception is ever raised, so the try/except safety net
+    in `_safe_collect` never fires -- which is exactly why the empty result used to be
+    indistinguishable from a clean one and got cached as a confirmed finding.
+    """
+
+    def setup_method(self):
+        from safesc.tools.scan.signals.behavior.install_script import (
+            InstallScriptCollector,
+        )
+
+        self.Collector = InstallScriptCollector
+
+    def _dep(self):
+        return _dep(name="left-pad", version="1.3.0", ecosystem="javascript")
+
+    async def test_unanswered_request_marks_the_collector_degraded(self):
+        from safesc.tools.scan.signals.collector import DEGRADED_FETCH, _safe_collect
+        from safesc.tools.scan.signals.provenance.http import _record_fetch_failure
+
+        class DeadRegistry:
+            """Stands in for the session after retries are exhausted: None, not a raise."""
+            async def get_json(self, url, **kw):
+                _record_fetch_failure(url)
+                return None
+
+        collector = self.Collector()
+        seen: list = []
+        signals = await _safe_collect(
+            collector, self._dep(), DeadRegistry(),
+            lambda c, d, reason: seen.append((c.dimension, reason)),
+        )
+
+        assert signals == []                                   # degrades, as before
+        assert seen == [(collector.dimension, DEGRADED_FETCH)]  # but no longer silently
+
+    async def test_a_clean_package_is_not_reported_as_degraded(self):
+        """The discrimination that makes the flag worth anything."""
+        from safesc.tools.scan.signals.collector import _safe_collect
+
+        session = MagicMock()
+        # A real npm document with no install hooks: answered, and genuinely clean.
+        session.get_json = AsyncMock(
+            return_value={"versions": {"1.3.0": {"scripts": {"test": "jest"}}}}
+        )
+        seen: list = []
+        signals = await _safe_collect(
+            self.Collector(), self._dep(), session,
+            lambda c, d, reason: seen.append(reason),
+        )
+
+        assert signals == []
+        assert seen == []
+
+    async def test_a_definitive_404_is_absence_not_failure(self):
+        """A package the registry says does not exist was answered, so nothing degraded."""
+        from safesc.tools.scan.signals.collector import _safe_collect
+
+        session = MagicMock()
+        session.get_json = AsyncMock(return_value=None)  # 404 path: no failure recorded
+        seen: list = []
+        await _safe_collect(
+            self.Collector(), self._dep(), session,
+            lambda c, d, reason: seen.append(reason),
+        )
+        assert seen == []
+
+    async def test_a_raising_collector_is_still_caught_and_reported(self):
+        from safesc.tools.scan.signals.collector import DEGRADED_EXCEPTION, _safe_collect
+
+        class Boom(self.Collector):
+            async def collect(self, dep, session):
+                raise RuntimeError("registry client blew up")
+
+        seen: list = []
+        signals = await _safe_collect(
+            Boom(), self._dep(), MagicMock(),
+            lambda c, d, reason: seen.append(reason),
+        )
+        assert signals == []                      # §8: never aborts the run
+        assert seen == [DEGRADED_EXCEPTION]
+
+    async def test_real_session_records_an_exhausted_retry(self, monkeypatch):
+        """The link the mocks above stand in for: the production session must report.
+
+        Without this, `_record_fetch_failure` could be deleted from http.py and every
+        other test here would still pass, because they inject the recording themselves.
+        """
+        import asyncio as _asyncio
+
+        from safesc.tools.scan.signals.provenance.http import (
+            RateLimitedSession,
+            capture_fetch_failures,
+        )
+
+        monkeypatch.setattr(_asyncio, "sleep", AsyncMock())  # skip the real backoff
+        session = RateLimitedSession()
+        session._session = MagicMock()
+        session._session.get = MagicMock(side_effect=_asyncio.TimeoutError)
+
+        url = "https://registry.example/left-pad"
+        with capture_fetch_failures() as failures:
+            result = await session.get_json(url)
+
+        assert result is None          # same return as a 404 -- that is the whole problem
+        assert failures == [url]       # ...now distinguishable from one

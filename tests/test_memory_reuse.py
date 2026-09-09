@@ -211,10 +211,12 @@ _ALL = [
 _FRESH = [s for s in _ALL if s.dimension not in _CACHEABLE]
 
 
-def _run_cached(cache, calls: dict):
+def _run_cached(cache, calls: dict, *, complete: bool = True):
+    """Drive the cache-assisted collector. `complete=False` simulates a cacheable-dimension
+    collector whose registry request went unanswered (CLAUDE.md §3.1)."""
     def run_all(dep):
         calls["all"] = calls.get("all", 0) + 1
-        return list(_ALL)
+        return list(_ALL), complete
 
     def run_fresh(dep):
         calls["fresh"] = calls.get("fresh", 0) + 1
@@ -282,3 +284,41 @@ def test_corrupt_cache_entry_falls_through_to_a_full_collection():
     out = _run_cached(store, calls)
     assert calls == {"all": 1}
     assert len(out) == 4
+
+
+# --- an incomplete collection must never be cached (§3.1, §8) --------------------------
+# A collector returns [] both when the artifact is clean and when its registry request
+# went unanswered. Within one run that conflation is ordinary graceful degradation. It is
+# NOT safe to persist: the entry is keyed on the pinned artifact and shared by every
+# project depending on that release for the whole TTL, so one transient outage would
+# become a fleet-wide false clean. Fewer signals read as cleaner, so the cache is only
+# ever allowed to save work.
+
+
+def test_degraded_collection_is_not_written_to_the_cache():
+    store = ShortTermStore(FakeRedis(), RedisConfig())
+    calls: dict = {}
+    signals = _run_cached(store, calls, complete=False)
+
+    # The run itself is unaffected -- it still returns every signal it did collect.
+    assert len(signals) == len(_ALL)
+    # ...but nothing was persisted for the next run to reuse.
+    assert store.cache_get(_signal_cache_key(_dep())) is None
+
+
+def test_degraded_run_does_not_poison_a_later_healthy_run():
+    """The dep simply re-collects next time: costs work, cannot cost a signal."""
+    store = ShortTermStore(FakeRedis(), RedisConfig())
+    _run_cached(store, {}, complete=False)
+    assert store.cache_get(_signal_cache_key(_dep())) is None
+
+    calls: dict = {}
+    _run_cached(store, calls, complete=True)
+    assert calls["all"] == 1                              # full collection, not a hit
+    assert store.cache_get(_signal_cache_key(_dep())) is not None
+
+    calls2: dict = {}
+    reused = _run_cached(store, calls2, complete=True)
+    assert "all" not in calls2                            # served from cache
+    assert calls2["fresh"] == 1                           # volatile dims re-collected
+    assert len(reused) == len(_ALL)

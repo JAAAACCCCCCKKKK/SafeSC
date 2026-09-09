@@ -169,7 +169,7 @@ def _cached_collect_signals(
     dep: Dependency,
     *,
     cache,
-    run_all: Callable[[Dependency], list[Signal]],
+    run_all: Callable[[Dependency], tuple[list[Signal], bool]],
     run_fresh: Callable[[Dependency], list[Signal]],
     cacheable_dims: frozenset,
     ttl_s: Optional[int] = None,
@@ -178,11 +178,20 @@ def _cached_collect_signals(
 
     On a hit only the always-fresh collectors run (vulnerability/popularity — see
     `collector.CACHEABLE_DIMENSIONS` for why those two can't be reused). On a miss every
-    collector runs and the cacheable subset is stored.
+    collector runs and the cacheable subset is stored — but only if that collection was
+    *complete*.
 
     Every cache failure — unreachable store, corrupt entry, unparseable payload — falls
     through to a *full* collection. The cache may only ever save work; it must never be
     able to reduce the signal set, because fewer signals read as cleaner (§8).
+
+    Completeness is the other half of that rule, and the reason `run_all` returns a flag.
+    A collector whose registry request went unanswered returns no signals, exactly like a
+    collector that found nothing wrong; within one run that is ordinary §8 degradation,
+    but writing it to a 7-day, fleet-wide, artifact-keyed entry would turn one transient
+    outage into a persistent false clean for every project on that release. So an
+    incomplete collection is simply not written: the dep re-collects next run, which costs
+    a little work and cannot cost a signal.
     """
     key = _signal_cache_key(dep)
     cached: Optional[list[Signal]] = None
@@ -195,10 +204,24 @@ def _cached_collect_signals(
         cached = None
 
     if cached is not None:
-        logger.debug("signal cache hit for %s (%d reused)", key, len(cached))
+        # "0 reused" is a healthy, common outcome, not a near-miss: most dependencies
+        # have nothing notable in the three cacheable dimensions, and the saving is the
+        # skipped collectors either way. Say so, so a log full of zeros doesn't read as
+        # a broken cache.
+        logger.debug(
+            "signal cache hit for %s (%d signal(s) reused; cacheable collectors skipped)",
+            key, len(cached),
+        )
         return cached + run_fresh(dep)
 
-    signals = run_all(dep)
+    signals, complete = run_all(dep)
+    if not complete:
+        # Degraded in a cacheable dimension: correct for this run, unsafe to persist.
+        logger.warning(
+            "signal cache write skipped for %s: incomplete collection "
+            "(a cacheable-dimension collector was degraded)", key,
+        )
+        return signals
     reusable = [s for s in signals if s.dimension in cacheable_dims]
     try:
         cache.cache_set(key, [s.model_dump(mode="json") for s in reusable], ttl_s)
@@ -249,11 +272,11 @@ def load_default_tools(
     def verify_hash(dep: Dependency) -> list[Signal]:  # Stage 2
         return [_hash_result_to_graph(r) for r in verifier.run_verification([dep])]
 
-    def _collect_with(dep: Dependency, collectors=None) -> list[Signal]:
+    def _collect_with(dep: Dependency, collectors=None, on_error=None) -> list[Signal]:
         return [
             _scan_signal_to_graph(s)
             for s in collector.run_collection(
-                [dep], collectors=collectors, host_gate=host_gate
+                [dep], collectors=collectors, host_gate=host_gate, on_error=on_error
             )
         ]
 
@@ -266,11 +289,28 @@ def load_default_tools(
             TrustDimension(d.value) for d in collector.CACHEABLE_DIMENSIONS
         )
 
+        _cacheable_scan_dims = frozenset(collector.CACHEABLE_DIMENSIONS)
+
+        def _collect_all_tracked(dep: Dependency) -> tuple[list[Signal], bool]:
+            """Full collection plus "was every cacheable-dimension collector complete?".
+
+            Only the cacheable dimensions gate the write: an OSV or popularity outage is
+            irrelevant here, since those two are re-collected every run by design and
+            never enter the cached subset.
+            """
+            degraded: set = set()
+
+            def _note(coll, _dep, _reason) -> None:
+                degraded.add(coll.dimension)
+
+            signals = _collect_with(dep, on_error=_note)
+            return signals, not (degraded & _cacheable_scan_dims)
+
         def collect_signals(dep: Dependency) -> list[Signal]:  # Stage 3, cache-assisted
             return _cached_collect_signals(
                 dep,
                 cache=cache,
-                run_all=_collect_with,
+                run_all=_collect_all_tracked,
                 run_fresh=lambda d: _collect_with(d, collectors=_fresh),
                 cacheable_dims=_cacheable_dims,
             )

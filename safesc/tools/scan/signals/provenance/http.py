@@ -14,18 +14,62 @@ It only ever changes *timing*, never output, so the §2.1 purity/idempotency rul
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections import defaultdict
-from contextlib import asynccontextmanager
-from typing import Any, Callable
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import aiohttp
 
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_PER_HOST = 10
 _MAX_RETRIES = 4
 _BASE_BACKOFF = 0.5  # seconds
+
+# -- fetch-failure reporting (CLAUDE.md §3.1, §8) --------------------------------------
+# Every request method returns None both when the registry says "no such package" (404)
+# and when the request never got an answer (timeout / DNS / 5xx after retries). For one
+# run that conflation is harmless — §8 graceful degradation, fewer signals, run continues.
+# It stops being harmless once those signals are *cached across runs*: a collector that
+# returned [] because PyPI was briefly unreachable is indistinguishable from one that
+# returned [] because the package is clean, and caching the latter shape would persist a
+# false clean for the whole TTL, fleet-wide. So the exhausted-retry paths — and only
+# those, never a definitive 404/410 — report here, letting the caller decide not to cache
+# an incomplete collection.
+#
+# A ContextVar rather than session state because attribution has to be per
+# (collector, dep): `collect_all` fans every collector out as its own asyncio task, and a
+# task copies the context at creation, so each `_safe_collect` sees only its own failures.
+_fetch_failures: ContextVar[list[str] | None] = ContextVar(
+    "safesc_fetch_failures", default=None
+)
+
+
+def _record_fetch_failure(url: str) -> None:
+    """Note that *url* never produced an answer. No-op outside a capture scope."""
+    sink = _fetch_failures.get()
+    if sink is not None:
+        sink.append(url)
+
+
+@contextmanager
+def capture_fetch_failures() -> Iterator[list[str]]:
+    """Collect the URLs that failed outright inside this scope.
+
+    A non-empty list means the enclosed work saw an *incomplete* view of the registry,
+    so its (possibly empty) signal output must not be treated as a confirmed finding.
+    """
+    sink: list[str] = []
+    token = _fetch_failures.set(sink)
+    try:
+        yield sink
+    finally:
+        _fetch_failures.reset(token)
 
 
 class RateLimitedSession:
@@ -115,10 +159,12 @@ class RateLimitedSession:
                     if status == 404:
                         return None
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     await asyncio.sleep(_BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3))
                 except asyncio.TimeoutError:
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     await asyncio.sleep(_BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3))
         return None
@@ -152,10 +198,12 @@ class RateLimitedSession:
                     if status in (404, 410):
                         return False
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     await asyncio.sleep(_BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3))
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     await asyncio.sleep(_BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3))
         return None
@@ -196,11 +244,13 @@ class RateLimitedSession:
                     if status == 404:
                         return None
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     delay = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3)
                     await asyncio.sleep(delay)
                 except asyncio.TimeoutError:
                     if attempt == _MAX_RETRIES - 1:
+                        _record_fetch_failure(url)
                         return None
                     delay = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.3)
                     await asyncio.sleep(delay)
