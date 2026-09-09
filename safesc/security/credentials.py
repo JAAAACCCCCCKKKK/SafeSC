@@ -25,6 +25,13 @@ PROVIDER_DEFAULT_MODELS = {
 DEFAULT_EMBEDDING_MODEL = "voyage-4-large"
 
 
+def _clean(value: Optional[str]) -> Optional[str]:
+    """ Strip input credential values """
+    if value is None:
+        return None
+    return value.strip() or None
+
+
 class LLMCredentials(BaseModel):
     """User-supplied reasoning-LLM credentials.
 
@@ -63,13 +70,13 @@ class EmbeddingCredentials(BaseModel):
         `UserCredentials.from_env` remains the intake for anything that actually runs the
         graph.
         """
-        key = os.environ.get("SAFESC_EMBEDDING_API_KEY")
+        key = _clean(os.environ.get("SAFESC_EMBEDDING_API_KEY"))
         if not key:
             raise MissingCredentialError("SAFESC_EMBEDDING_API_KEY")
         return cls(
             api_key=SecretStr(key),
-            base_url=os.environ.get("SAFESC_EMBEDDING_BASE_URL"),
-            model=os.environ.get("SAFESC_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL,
+            base_url=_clean(os.environ.get("SAFESC_EMBEDDING_BASE_URL")),
+            model=_clean(os.environ.get("SAFESC_EMBEDDING_MODEL")) or DEFAULT_EMBEDDING_MODEL,
         )
 
 
@@ -97,30 +104,32 @@ class UserCredentials(BaseModel):
         embedding_model: Optional[str] = None,
     ) -> "UserCredentials":
         """Build from an HTTP request's supplied values (API path)."""
+        llm_api_key = _clean(llm_api_key)
         if not llm_api_key:
             raise MissingCredentialError("llm_api_key")
-        provider = (llm_provider or "").strip().lower()
+        provider = (_clean(llm_provider) or "").lower()
         if not provider:
             # No default provider: the caller must configure one (BYOK, §3.5).
             raise MissingCredentialError("llm_provider")
-        model = llm_model or PROVIDER_DEFAULT_MODELS.get(provider)
+        model = _clean(llm_model) or PROVIDER_DEFAULT_MODELS.get(provider)
         if not model:
             # A provider with no built-in default: the caller must pin a model explicitly.
             raise MissingCredentialError(
                 f"llm_model (no built-in default for provider '{provider}')"
             )
         embedding = None
+        embedding_api_key = _clean(embedding_api_key)
         if embedding_api_key:
             embedding = EmbeddingCredentials(
                 api_key=SecretStr(embedding_api_key),
-                base_url=embedding_base_url,
-                model=embedding_model or DEFAULT_EMBEDDING_MODEL,
+                base_url=_clean(embedding_base_url),
+                model=_clean(embedding_model) or DEFAULT_EMBEDDING_MODEL,
             )
         return cls(
             llm=LLMCredentials(
                 api_key=SecretStr(llm_api_key),
                 provider=provider,
-                base_url=llm_base_url,
+                base_url=_clean(llm_base_url),
                 model=model,
             ),
             embedding=embedding,
@@ -132,13 +141,13 @@ class UserCredentials(BaseModel):
         SAFESC_LLM_API_KEY and SAFESC_LLM_PROVIDER (both required; no default provider),
         plus optional SAFESC_LLM_MODEL / SAFESC_LLM_BASE_URL, and — if memory is on —
         SAFESC_EMBEDDING_API_KEY (+ _BASE_URL / _MODEL)."""
-        llm_key = os.environ.get("SAFESC_LLM_API_KEY")
+        llm_key = _clean(os.environ.get("SAFESC_LLM_API_KEY"))
         if not llm_key:
             raise MissingCredentialError("SAFESC_LLM_API_KEY")
-        llm_provider = os.environ.get("SAFESC_LLM_PROVIDER")
-        if not (llm_provider or "").strip():
+        llm_provider = _clean(os.environ.get("SAFESC_LLM_PROVIDER"))
+        if not llm_provider:
             raise MissingCredentialError("SAFESC_LLM_PROVIDER")
-        emb_key = os.environ.get("SAFESC_EMBEDDING_API_KEY")
+        emb_key = _clean(os.environ.get("SAFESC_EMBEDDING_API_KEY"))
         if require_embedding and not emb_key:
             raise MissingCredentialError("SAFESC_EMBEDDING_API_KEY")
         return cls.from_request(
