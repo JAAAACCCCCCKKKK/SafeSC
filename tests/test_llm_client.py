@@ -98,8 +98,20 @@ def test_anthropic_provider_calls_messages_with_model(monkeypatch):
     out = client("system prompt", "user prompt")
     assert out.verdict == "suspicious"
     assert cap["model"] == "claude-x"
-    assert cap["system"] == "system prompt"
+    assert cap["system"] == [
+        {"type": "text", "text": "system prompt", "cache_control": {"type": "ephemeral"}}
+    ]
     assert "base_url" not in cap["init"]  # no base_url passed when unset
+
+
+def test_anthropic_provider_caches_only_the_system_prompt(monkeypatch):
+    """The per-dep user prompt must stay uncached: marking it would pay the cache-write
+    premium on every call for an entry no later call can read."""
+    cap: dict = {}
+    _install_fake_anthropic(monkeypatch, cap)
+    lc.make_llm(_creds(provider="anthropic"))("s", "u")
+    assert "cache_control" not in cap  # no top-level auto-caching of the last block
+    assert cap["messages"] == [{"role": "user", "content": "u"}]
 
 
 def test_anthropic_provider_passes_base_url(monkeypatch):

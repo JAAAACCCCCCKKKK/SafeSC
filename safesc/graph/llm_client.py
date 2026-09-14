@@ -190,12 +190,16 @@ def make_claude_llm(creds: LLMCredentials) -> LLMClient:
             resp = client.messages.create(
                 model=creds.model,
                 max_tokens=_MAX_TOKENS,
-                system=system,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user}],
             )
+        usage = getattr(resp, "usage", None)
         logger.debug(
-            "LLM response <- provider=anthropic model=%s stop_reason=%s usage=%s",
-            creds.model, getattr(resp, "stop_reason", None), getattr(resp, "usage", None),
+            "LLM response <- provider=anthropic model=%s stop_reason=%s usage=%s "
+            "cache_read=%s cache_write=%s",
+            creds.model, getattr(resp, "stop_reason", None), usage,
+            getattr(usage, "cache_read_input_tokens", None),
+            getattr(usage, "cache_creation_input_tokens", None),
         )
         # concatenate text blocks; structured-output enforcement is the validator's job
         text = "".join(getattr(b, "text", "") for b in resp.content)
