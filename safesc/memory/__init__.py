@@ -3,8 +3,8 @@
 Only the MemoryManager (2.7.4) reads or writes these; no graph node imports them directly
 (6.1.6). Store clients are lazily constructed so the core package stays importable without
 the optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-postgres).
-`memory.checkpoint` is deliberately not re-exported here: it imports LangGraph, which the
-core package must not require.
+`memory.checkpoint` is deliberately not re-exported here: its Redis saver
+(`memory.redis_checkpoint`) imports LangGraph, which the core package must not require.
 """
 
 from __future__ import annotations

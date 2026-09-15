@@ -101,7 +101,7 @@ class ShortTermStore:
         plain hash / sorted-set / set commands. It needs its own binary-safe connection,
         because this store's client decodes responses to `str` and serialized checkpoints
         are bytes."""
-        from safesc.memory.checkpoint import PlainRedisSaver  # lazy: needs langgraph
+        from safesc.memory.redis_checkpoint import PlainRedisSaver  # lazy: needs langgraph
 
         return PlainRedisSaver.from_url(
             self.config.url,
