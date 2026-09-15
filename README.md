@@ -247,7 +247,7 @@ grounded**. It cannot make them more permissive; see the invariant below.
 | Store | What you get |
 |---|---|
 | **Redis** (`SAFESC_REDIS_URL`) | Checkpointing, so `safesc audit . --resume` reattaches to an interrupted run · fleet-wide per-registry rate limiting shared across concurrent audits · a 7-day cross-run cache of the cheap signals that cannot change for a pinned `name@version` · exact-hash recall of prior verdicts. **Needs no second API key.** |
-| **Postgres + pgvector** (`SAFESC_PGVECTOR_DSN`) | Adds *similarity* search — behaviourally related prior findings, and a curated known-attack fingerprint corpus — as grounding for Stage-4 LLM analysis. Requires an embedding key. |
+| **Postgres + pgvector** (`SAFESC_PGVECTOR_DSN`) | Adds *similarity* search — behaviourally related prior findings, and a curated known-attack fingerprint corpus — as grounding for Stage-4 LLM analysis. Requires an embedding key. Also hosts the `--resume` checkpointer, which is used in preference to Redis's once `safesc store init` has created its tables. |
 
 Either half works alone. Redis-only is the cheapest useful configuration: everything
 except similarity search, with one store and no extra key.
@@ -354,11 +354,10 @@ never inside an audit.
 
 Two things that are *not* SafeSC bugs when you see them in the log:
 
-- `Command is not available: 'FT.INFO'`, or `Upstash Redis does not support FT.* commands.
-  Use SEARCH.* commands instead` — your Redis has no RediSearch module (Upstash and most
-  managed Redis do not). Only the LangGraph checkpointer needs it, so `--resume` is
-  unavailable; the cache, semaphores and exact-hash recall use plain commands and are
-  unaffected.
+- `postgres checkpointer unavailable (checkpoint tables missing; run `safesc store init`);
+  falling back to the Redis checkpointer` — `--resume` still works, on Redis. Run
+  `safesc store init` once to move checkpoints to Postgres. Both checkpointers use only
+  plain commands, so Upstash and other managed Redis without RediSearch are fine.
 - A store that is configured but unreachable prints a warning and the audit continues
   store-free. That is deliberate (§3.3). Set `memory-strict: true` / `SAFESC_MEMORY_STRICT=1`
   if a silently store-free audit should instead be a hard failure.

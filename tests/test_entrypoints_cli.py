@@ -281,6 +281,42 @@ def test_missing_checkpointer_extra_does_not_break_the_redis_tier(monkeypatch, c
     assert "checkpointing unavailable" in capsys.readouterr().err
 
 
+class _CheckpointingStore:
+    def checkpointer(self):
+        return "REDIS-SAVER"
+
+
+def test_postgres_checkpointer_is_preferred_over_redis(monkeypatch, capsys):
+    monkeypatch.setattr("safesc.memory.checkpoint.postgres_checkpointer", lambda dsn: "PG-SAVER")
+    saver, backend = bootstrap._select_checkpointer(_CheckpointingStore(), "postgresql://db/x")
+    assert (saver, backend) == ("PG-SAVER", "postgres")
+    assert capsys.readouterr().err == ""
+
+
+def test_unavailable_postgres_checkpointer_falls_back_to_redis_with_a_warning(monkeypatch, capsys):
+    def _down(dsn):
+        raise RuntimeError("checkpoint tables missing; run `safesc store init`")
+
+    monkeypatch.setattr("safesc.memory.checkpoint.postgres_checkpointer", _down)
+    saver, backend = bootstrap._select_checkpointer(_CheckpointingStore(), "postgresql://db/x")
+    assert (saver, backend) == ("REDIS-SAVER", "redis")
+    err = capsys.readouterr().err
+    assert "postgres checkpointer unavailable" in err and "falling back to the Redis" in err
+
+
+def test_unavailable_postgres_checkpointer_without_redis_disables_resume(monkeypatch, capsys):
+    def _down(dsn):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("safesc.memory.checkpoint.postgres_checkpointer", _down)
+    assert bootstrap._select_checkpointer(None, "postgresql://db/x") == (None, None)
+    assert "--resume will not work" in capsys.readouterr().err
+
+
+def test_redis_only_uses_the_redis_checkpointer():
+    assert bootstrap._select_checkpointer(_CheckpointingStore(), None) == ("REDIS-SAVER", "redis")
+
+
 # ============================================================ resume
 
 
@@ -343,6 +379,32 @@ def test_store_init_creates_the_schema(capsys):
     assert cli.main(["store", "init"], memory=_FakeMemory(vector=vector)) == 0
     assert vector.schema_calls == 1
     assert "schema ready" in capsys.readouterr().out
+
+
+def test_store_init_also_creates_the_postgres_checkpoint_tables(monkeypatch, capsys):
+    import types
+
+    seen = []
+    monkeypatch.setattr("safesc.memory.checkpoint.setup_postgres_checkpointer", seen.append)
+    vector = _FakeVector()
+    vector.config = types.SimpleNamespace(dsn="postgresql://db/safesc")
+    assert cli.main(["store", "init"], memory=_FakeMemory(vector=vector)) == 0
+    assert seen == ["postgresql://db/safesc"]
+    assert "checkpoint tables ready" in capsys.readouterr().out
+
+
+def test_store_init_checkpoint_table_failure_is_a_warning_not_an_error(monkeypatch, capsys):
+    import types
+
+    def _no_privileges(dsn):
+        raise RuntimeError("permission denied for schema public")
+
+    monkeypatch.setattr("safesc.memory.checkpoint.setup_postgres_checkpointer", _no_privileges)
+    vector = _FakeVector()
+    vector.config = types.SimpleNamespace(dsn="postgresql://db/safesc")
+    assert cli.main(["store", "init"], memory=_FakeMemory(vector=vector)) == 0
+    assert vector.schema_calls == 1
+    assert "checkpoint tables not created" in capsys.readouterr().err
 
 
 def test_store_init_without_a_configured_store_exits_2(capsys):

@@ -183,7 +183,7 @@ runs:
 
     # Tier-2 by default (CLAUDE.md §3.6) — no Redis, no Postgres, no checkpointer, which
     # is what a GitHub-hosted runner wants. The `memory` extra (redis / psycopg / voyageai /
-    # langgraph-checkpoint-redis) is pulled ONLY when a store is actually configured, so
+    # langgraph-checkpoint-postgres) is pulled ONLY when a store is actually configured, so
     # consumers who do not use one never pay for its install.
     - name: Install SafeSC
       shell: bash

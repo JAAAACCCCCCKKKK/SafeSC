@@ -16,7 +16,8 @@ needs none of them. The only requirement is a caller-supplied reasoning-LLM key
   semaphores, and the cross-run cheap-signal cache;
 * ``SAFESC_PGVECTOR_DSN`` (+ ``SAFESC_EMBEDDING_API_KEY``) → the §3.2 long-term store, so
   behaviourally *similar* prior findings and the known-attack fingerprint corpus ground
-  Stage-4 reasoning.
+  Stage-4 reasoning. The same database also hosts the checkpointer, which is preferred
+  over Redis's when both are configured (see ``_select_checkpointer``).
 
 Half-configured is a legitimate deployment, and Redis alone is the common one: it gives
 checkpointing, rate limiting, signal reuse **and** exact-hash verdict recall across runs —
@@ -79,6 +80,7 @@ class Runtime:
     memory: Any = None
     checkpointer: Any = None
     tier: str = "local"
+    checkpoint_backend: Optional[str] = None  # "postgres" | "redis" | None
 
 
 def _flag(name: str) -> bool:
@@ -133,7 +135,11 @@ def build_store_backed_runtime(
         from safesc.memory.short_term import RedisConfig, ShortTermStore
 
         store = ShortTermStore.from_url(
-            RedisConfig(url=redis_url, hot_ttl_s=_int_env("SAFESC_HOT_TTL_S", 7 * 24 * 3600))
+            RedisConfig(
+                url=redis_url,
+                hot_ttl_s=_int_env("SAFESC_HOT_TTL_S", 7 * 24 * 3600),
+                checkpoint_ttl_s=_int_env("SAFESC_CHECKPOINT_TTL_S", 7 * 24 * 3600),
+            )
         )
         if not store.ping():
             raise MemoryUnavailableError(f"redis at {redis_url} did not respond to PING")
@@ -141,12 +147,6 @@ def build_store_backed_runtime(
         # Fleet-wide per-registry limiting (§5.2). Shares one budget per host across every
         # concurrently running audit, unlike the in-process per_host semaphore.
         host_gate = session.host_gate(_int_env("SAFESC_HOST_CONCURRENCY", 10))
-        # Checkpointing is best-effort: it needs the langgraph-checkpoint-redis extra, and
-        # a deployment may well want Redis purely for caching and rate limiting.
-        try:
-            checkpointer = store.checkpointer()
-        except Exception as exc:
-            print(f"safesc: checkpointing unavailable ({exc}); --resume will not work", file=sys.stderr)
         tier = "redis"
 
     if dsn:
@@ -162,6 +162,10 @@ def build_store_backed_runtime(
         )
         embedder = make_embedding_client(EmbeddingCredentials.from_env())
         tier = "redis+pgvector" if store is not None else "pgvector"
+
+    # Chosen only after both stores are built, so a store that fails construction (and
+    # degrades the whole runtime) never leaves a half-opened checkpoint connection behind.
+    checkpointer, checkpoint_backend = _select_checkpointer(store, dsn)
 
     # A MemoryManager as soon as EITHER store exists — not only with pgvector. Redis alone
     # supports the whole exact-hash path (`read_context` returns the exact record and skips
@@ -179,7 +183,41 @@ def build_store_backed_runtime(
     # the host gate are baked into the tool seams at construction time, so nothing
     # downstream has to know whether a store exists.
     tools = load_default_tools(exclude=exclude, cache=store, host_gate=host_gate)
-    return Runtime(tools=tools, session=session, memory=memory, checkpointer=checkpointer, tier=tier)
+    return Runtime(
+        tools=tools, session=session, memory=memory, checkpointer=checkpointer, tier=tier,
+        checkpoint_backend=checkpoint_backend,
+    )
+
+
+def _select_checkpointer(store: Any, dsn: Optional[str]) -> tuple[Any, Optional[str]]:
+    """Pick the LangGraph checkpointer behind ``--resume`` (§3.1): Postgres, then Redis.
+
+    Postgres is preferred when configured: it is durable and TTL-free, so an interrupted
+    run stays resumable for as long as the operator wants, and the pgvector tier already
+    has the database. Redis is the fallback, via a saver that uses only plain commands so
+    it works on Upstash and other managed Redis without the RediSearch module.
+
+    Every failure here is a warning, never fatal — not even under SAFESC_MEMORY_STRICT,
+    which covers unreachable *stores*. A missing checkpointer only disables ``--resume``;
+    the audit itself runs identically.
+    """
+    if dsn:
+        try:
+            from safesc.memory.checkpoint import postgres_checkpointer
+
+            return postgres_checkpointer(dsn), "postgres"
+        except Exception as exc:
+            fallback = (
+                "falling back to the Redis checkpointer" if store is not None
+                else "--resume will not work"
+            )
+            print(f"safesc: postgres checkpointer unavailable ({exc}); {fallback}", file=sys.stderr)
+    if store is not None:
+        try:
+            return store.checkpointer(), "redis"
+        except Exception as exc:
+            print(f"safesc: checkpointing unavailable ({exc}); --resume will not work", file=sys.stderr)
+    return None, None
 
 
 def select_runtime(*, exclude: Sequence[str] = ()) -> Runtime:
@@ -304,7 +342,9 @@ def main(argv=None) -> int:
             _explain_missing_extra(exc.name.split(".")[0])
             return 2
         raise
-    logging.getLogger("safesc").info("runtime tier: %s", runtime.tier)
+    logging.getLogger("safesc").info(
+        "runtime tier: %s (checkpointer: %s)", runtime.tier, runtime.checkpoint_backend or "none"
+    )
 
     try:
         return cli_main(

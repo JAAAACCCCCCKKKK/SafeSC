@@ -53,7 +53,9 @@ memory = [
     "redis>=7.4,<8",                     # short-term store + distributed semaphores (§3.1)
     "psycopg[binary]>=3.3,<4",           # PGVector long-term store connection (§3.2)
     "voyageai>=0.5,<0.6",                # default BYOK embedding provider (§3.2, §3.5)
-    "langgraph-checkpoint-redis>=0.5,<0.6", # LangGraph Redis checkpointer (§3.1)
+    "langgraph-checkpoint-postgres>=3.1,<4", # preferred --resume checkpointer (§3.1); the
+                                             # Redis fallback is SafeSC's own plain-command
+                                             # saver, which needs no RediSearch module
 ]
 
 # Development-only tooling (PEP 735). Not a published extra — it never appears in the

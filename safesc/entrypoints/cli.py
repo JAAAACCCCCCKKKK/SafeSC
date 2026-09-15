@@ -121,7 +121,8 @@ def main(argv=None, *, tools=None, session=None, memory=None, config=None, check
         p.add_argument(
             "--resume", action="store_true",
             help="reattach to a previous interrupted run of this same target instead of "
-                 "starting a fresh thread (requires a checkpointer, i.e. SAFESC_REDIS_URL)",
+                 "starting a fresh thread (requires a checkpointer: SAFESC_PGVECTOR_DSN "
+                 "or SAFESC_REDIS_URL)",
         )
 
     p_audit = sub.add_parser("audit", help="full-repo audit (gates CI)")
@@ -169,8 +170,8 @@ def main(argv=None, *, tools=None, session=None, memory=None, config=None, check
         req = AuditRequest(mode=RunMode.QUERY, target=args.target)
     if args.resume and checkpointer is None:
         print(
-            "warning: --resume has no effect without a checkpointer; set SAFESC_REDIS_URL "
-            "to enable one (§3.1)", file=sys.stderr,
+            "warning: --resume has no effect without a checkpointer; set SAFESC_PGVECTOR_DSN "
+            "or SAFESC_REDIS_URL to enable one (§3.1)", file=sys.stderr,
         )
     return _run(
         req, tools=tools, session=session, memory=memory,
@@ -209,6 +210,21 @@ def _run_store_init(memory) -> int:
         return 2
     vector.ensure_schema()
     print("store init complete: pgvector schema ready")
+    # The Postgres checkpointer's tables live in the same database and are created here for
+    # the same reason: the audit path only *checks* they are current, it never runs DDL. Not
+    # fatal — without them `--resume` falls back to Redis (or is off), nothing else changes.
+    dsn = getattr(getattr(vector, "config", None), "dsn", None)
+    if dsn:
+        try:
+            from safesc.memory.checkpoint import setup_postgres_checkpointer
+
+            setup_postgres_checkpointer(dsn)
+            print("store init complete: checkpoint tables ready")
+        except Exception as exc:
+            print(
+                f"store: checkpoint tables not created ({exc}); --resume will use the Redis "
+                f"checkpointer if SAFESC_REDIS_URL is set", file=sys.stderr,
+            )
     return 0
 
 
