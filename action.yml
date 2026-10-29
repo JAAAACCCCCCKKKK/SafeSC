@@ -12,7 +12,7 @@ branding:
 inputs:
   llm-provider:
     description: >-
-      LLM provider: anthropic, openai, openai_responses, bedrock, gemini, mistral, litellm,
+      LLM provider: anthropic, openai, openai_responses, bedrock, gemini, mistral,
       llamaapi, ollama, llamacpp or writer.
     required: true
   llm-model:

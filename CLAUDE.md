@@ -44,7 +44,7 @@
 | Stage-4 evidence primitives | `safesc/tools/deep_analysis_tool.py` | ✅ |
 | Source fetching / risky-pattern scan / stylometry | `safesc/tools/{source,vulnscan,authorship}.py` | ✅ new, LLM-free |
 | Deterministic core (signals, ledger, gate, scorer, targets) | `safesc/core/` | ✅ |
-| LLM configuration + validation | `safesc/config/llm.py` | ✅ (all 11 Strands API-key providers) |
+| LLM configuration + validation | `safesc/config/llm.py` | ✅ (10 Strands API-key providers; LiteLLM excluded, §3.5) |
 | Memory (verdict store, known-attack store, manager) | `safesc/memory/` | ✅ |
 | Agent tools (pipeline, views, evidence, external, scoring) | `safesc/agents/tools/` | ✅ |
 | Harness (steering guard, validation, progress) | `safesc/agents/harness/` | ✅ |
@@ -239,9 +239,11 @@ escalate). A size/age policy is an open item (§9).
 
 Required: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`; optional `LLM_BASE_URL`,
 `LLM_CONTEXT_WINDOW`. Providers: every Strands model that authenticates with an API key —
-`anthropic, openai, openai_responses, bedrock (API key), gemini, mistral, litellm,
+`anthropic, openai, openai_responses, bedrock (API key), gemini, mistral,
 llamaapi (deprecated upstream), ollama, llamacpp, writer`. SageMaker is excluded (SigV4,
-no API key). Validation order, each with its own error class and exit 2:
+no API key). LiteLLM is excluded and not installed: it pins `filelock<4.0`, below every
+fix for filelock's 2026-10 advisories (one HIGH), so bundling it would ship them to every
+install; `openai` + `LLM_BASE_URL` reaches a LiteLLM proxy instead. Validation order, each with its own error class and exit 2:
 1. presence (`MissingLLMConfigError`) → 2. provider legal (`UnsupportedProviderError`) →
 3. model belongs to provider, per-provider rule with a cross-family hint
 (`ModelProviderMismatchError`) → 4. endpoint reachable (+ Ollama model pulled)

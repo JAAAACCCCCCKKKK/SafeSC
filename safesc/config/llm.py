@@ -4,7 +4,7 @@ SafeSC has exactly one configuration surface for its reasoning model, three envi
 variables owned by the caller (bring-your-own-key):
 
     LLM_PROVIDER   one of SUPPORTED_PROVIDERS (every provider Strands ships a model for
-                   that authenticates with an API key)
+                   that authenticates with an API key, except LiteLLM — see UNSUPPORTED_NOTES)
     LLM_MODEL      a model id that provider serves
     LLM_API_KEY    the caller's key for that provider
 
@@ -192,15 +192,6 @@ def _build_mistral(c: "LLMConfig", max_tokens: int):
     return MistralModel(api_key=c.secret(), client_args=client_args, model_id=c.model, max_tokens=max_tokens)
 
 
-def _build_litellm(c: "LLMConfig", max_tokens: int):
-    from strands.models.litellm import LiteLLMModel
-
-    client_args = {"api_key": c.secret()}
-    if c.base_url:
-        client_args["api_base"] = c.base_url
-    return LiteLLMModel(client_args=client_args, model_id=c.model)
-
-
 def _build_llamaapi(c: "LLMConfig", max_tokens: int):
     from strands.models.llamaapi import LlamaAPIModel
 
@@ -273,10 +264,6 @@ SUPPORTED_PROVIDERS: dict[str, ProviderSpec] = {
         ),
         lambda c: c.base_url or "https://api.mistral.ai", _build_mistral, example="mistral-large-latest",
     ),
-    "litellm": ProviderSpec(
-        "litellm", _rule(r"^[\w.\-]+/\S+$", "a LiteLLM 'provider/model' id such as groq/llama-3.3-70b-versatile"),
-        lambda c: c.base_url, _build_litellm, example="groq/llama-3.3-70b-versatile",
-    ),
     "llamaapi": ProviderSpec(
         "llamaapi", _rule(r"^\S*llama\S*$", "a Llama API model id such as Llama-4-Maverick-17B-128E-Instruct-FP8"),
         lambda c: c.base_url or "https://api.llama.com", _build_llamaapi,
@@ -307,9 +294,14 @@ _ALIASES = {
 # Strands also ships a SageMaker model, but SageMaker endpoints authenticate with AWS SigV4
 # credentials, not an API key, so they cannot be driven by LLM_API_KEY. Bedrock (which does
 # accept API keys) is the supported route to AWS-hosted models.
+# LiteLLM is not installed: it pins filelock<4.0, and every fix for filelock's 2026-10
+# advisories (one HIGH) is in 4.2.1+, so shipping it would ship those to every install.
 UNSUPPORTED_NOTES = {
     "sagemaker": "SageMaker endpoints authenticate with AWS SigV4 credentials, not an API key; "
                  "use LLM_PROVIDER=bedrock with a Bedrock API key instead.",
+    "litellm": "LiteLLM is not bundled (it pins a filelock release with known vulnerabilities); "
+               "use LLM_PROVIDER=openai with LLM_BASE_URL set to any OpenAI-compatible endpoint, "
+               "including a LiteLLM proxy.",
 }
 
 
@@ -438,7 +430,7 @@ async def _http_reach(url: str) -> None:
 async def _check_reachable(config: LLMConfig, reach: Reach) -> None:
     url = config.spec.endpoint(config)
     if not url:
-        return  # LiteLLM without a base URL routes per model prefix; the probe covers it
+        return  # no fixed endpoint to probe; the authenticated probe (step 5) covers it
     try:
         await reach(url)
     except Exception as exc:

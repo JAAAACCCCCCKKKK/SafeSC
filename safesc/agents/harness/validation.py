@@ -21,6 +21,9 @@ import re
 from typing import Iterable, Optional
 
 _PATH_TOKEN = re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,6}")
+# A URL is a registry/web reference, not a file citation, and its `//host` or path would
+# otherwise read as one ('//github.com'). Dropped before tokenizing, it is prose like any other.
+_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+")
 _PROSE_DOTTED = frozenset({"e.g", "i.e", "etc", "vs", "cf", "et.al", "a.k.a", "aka"})
 _FILE_EXTENSIONS = frozenset({
     "py", "pyx", "js", "mjs", "cjs", "ts", "tsx", "jsx", "rs", "go", "java", "kt",
@@ -58,7 +61,7 @@ def unresolved_refs(evidence: Iterable[str], citable: set[str], roots: Iterable[
     known = {_norm(c, roots) for c in citable}
     bad = []
     for ref in evidence:
-        cited = {_norm(t, roots) for t in _PATH_TOKEN.findall(ref) if _looks_like_file(t)}
+        cited = {_norm(t, roots) for t in _PATH_TOKEN.findall(_URL.sub(" ", ref)) if _looks_like_file(t)}
         if cited and not any(_matches(c, known) for c in cited):
             bad.append(ref)
     return bad

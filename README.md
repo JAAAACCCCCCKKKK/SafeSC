@@ -141,7 +141,6 @@ Every model provider Strands ships that authenticates with an API key:
 | `bedrock` | `us.anthropic.claude-sonnet-5` | Bedrock API key; `AWS_REGION` selects the region |
 | `gemini` | `gemini-2.5-pro` | |
 | `mistral` | `mistral-large-latest` | |
-| `litellm` | `groq/llama-3.3-70b-versatile` | `provider/model` form |
 | `llamaapi` | `Llama-3.3-70B-Instruct` | Deprecated upstream (Meta retired the Llama API) |
 | `ollama` | `qwen3:32b` | Local server: key unused but required (any value) |
 | `llamacpp` | `default` | Local server: key is sent as a bearer token if it requires one |
@@ -149,6 +148,10 @@ Every model provider Strands ships that authenticates with an API key:
 
 SageMaker is not supported: its endpoints authenticate with AWS SigV4, not an API key. Use
 `bedrock` instead.
+
+LiteLLM is not bundled: it pins `filelock<4.0`, and every fix for filelock's October 2026
+advisories is in 4.2.1+. Use `openai` with `LLM_BASE_URL` pointing at any OpenAI-compatible
+endpoint, a LiteLLM proxy included.
 
 ---
 

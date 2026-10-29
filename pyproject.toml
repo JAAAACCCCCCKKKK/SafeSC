@@ -35,7 +35,9 @@ dependencies = [
     # The agent runtime, every model provider Strands ships that authenticates with an API
     # key (LLM_PROVIDER picks one at run time; unused SDKs are never imported), and the
     # vended web_fetch tool. One install for every use: `pip install safesc`.
-    "strands-agents[anthropic,openai,gemini,litellm,llamaapi,mistral,ollama,writer,web-fetch]>=1.62,<2",
+    # Except litellm: it pins filelock<4.0, below every fix for filelock's 2026-10 advisories,
+    # so it would ship a known-vulnerable filelock to every install (config/llm.py).
+    "strands-agents[anthropic,openai,gemini,llamaapi,mistral,ollama,writer,web-fetch]>=1.62,<2",
 ]
 
 # Development-only tooling (PEP 735). Not a published extra — it never appears in the

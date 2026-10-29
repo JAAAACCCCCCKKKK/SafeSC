@@ -284,6 +284,10 @@ def test_validation_rules():
     assert validation.check_judgement(["see e.g. the registry"], shown) is None                # prose passes
     assert validation.check_judgement(["/ws/abs/package/build.rs:3"], shown, ["/ws/abs"]) is None
     assert "never shown" in validation.check_judgement(["src/evil.py: steals"], shown)
+    # a registry fact carrying a URL is not a file citation ('//github.com' is not a path)
+    registry = "registry metadata: repo_url 'https://github.com/pydantic/httpx2', homepage https://pypi.org/project/httpx2/2.16.0/"
+    assert validation.check_judgement([registry], shown) is None
+    assert "never shown" in validation.check_judgement(["https://example.com src/evil.py: steals"], shown)
 
 
 def test_read_source_is_view_only_and_confined(tmp_path):

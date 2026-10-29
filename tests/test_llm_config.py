@@ -76,6 +76,11 @@ def test_sagemaker_is_rejected_with_a_reason():
         _load(_env(provider="sagemaker"))
 
 
+def test_litellm_is_rejected_with_an_alternative():
+    with pytest.raises(UnsupportedProviderError, match="LLM_PROVIDER=openai with LLM_BASE_URL"):
+        _load(_env(provider="litellm", model="groq/llama-3.3-70b-versatile"))
+
+
 @pytest.mark.parametrize("raw,canonical", [
     ("Anthropic", "anthropic"), ("google", "gemini"), ("openai-responses", "openai_responses"),
     ("llama.cpp", "llamacpp"), ("llama-api", "llamaapi"), ("aws", "bedrock"),
@@ -88,7 +93,7 @@ def test_provider_aliases(raw, canonical):
 
 def test_every_strands_api_key_provider_is_supported():
     assert set(SUPPORTED_PROVIDERS) == {
-        "anthropic", "bedrock", "gemini", "litellm", "llamaapi", "llamacpp", "mistral", "ollama",
+        "anthropic", "bedrock", "gemini", "llamaapi", "llamacpp", "mistral", "ollama",
         "openai", "openai_responses", "writer",
     }
 
@@ -104,7 +109,6 @@ def test_every_strands_api_key_provider_is_supported():
     ("bedrock", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/x", "no-dot-here"),
     ("gemini", "models/gemini-2.5-flash", "claude-sonnet-5"),
     ("mistral", "codestral-latest", "gpt-5"),
-    ("litellm", "groq/llama-3.3-70b-versatile", "gpt-5"),
     ("llamaapi", "Llama-3.3-70B-Instruct", "gpt-5"),
     ("ollama", "qwen3:32b", "has spaces"),
     ("writer", "palmyra-x5", "gpt-5"),
@@ -275,7 +279,7 @@ def test_context_window_is_optional_and_validated():
 @pytest.mark.parametrize("provider,model", [
     ("anthropic", "claude-sonnet-5"), ("openai", "gpt-5"), ("openai_responses", "gpt-5"),
     ("bedrock", "us.anthropic.claude-sonnet-5"), ("gemini", "gemini-2.5-pro"), ("mistral", "mistral-large-latest"),
-    ("litellm", "groq/llama-3.3-70b-versatile"), ("llamaapi", "Llama-3.3-70B-Instruct"),
+    ("llamaapi", "Llama-3.3-70B-Instruct"),
     ("ollama", "qwen3:32b"), ("llamacpp", "default"), ("writer", "palmyra-x5"),
 ])
 def test_every_provider_builds_a_real_strands_model(provider, model):

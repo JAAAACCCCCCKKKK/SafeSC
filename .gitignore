@@ -209,8 +209,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
-# Local dev scripts (not for CI or production)
-scripts/
+# Local dev scripts (not for CI or production). Anchored: unanchored, it also swallowed
+# tests/fixtures/attacks/poisoned_install_hook/scripts/setup.js.
+/scripts/
 */scripts/
 
 # Marimo
