@@ -1,107 +1,72 @@
 name: "SafeSC dependency audit"
 description: >-
-  SafeSC dependency-audit CI gate: deterministic supply-chain signals (Stages 0–3) plus
-  LLM deep analysis (Stage 4). Bring-your-own LLM key; no Redis or Postgres required,
-  but both can be attached for caching, fleet-wide rate limiting and prior-finding grounding.
+  Agentic dependency supply-chain audit: deterministic Stage 0-3 signals run by an
+  orchestrator agent, LLM subagents for identity / behavior / provenance / authorship /
+  unreported-vulnerability analysis, and one deterministic score that gates CI.
+  Bring your own LLM key (any provider Strands supports).
 author: "SafeSC"
 branding:
   icon: "shield"
   color: "purple"
 
 inputs:
-  target:
-    description: "Repo path, lockfile, or git URL to audit."
-    required: false
-    default: "."
-  llm-api-key:
-    description: "BYOK reasoning-LLM API key for your chosen provider. Pass a repository secret."
-    required: true
   llm-provider:
-    description: "LLM provider (required, no default): anthropic or openai (also any OpenAI-compatible endpoint via llm-base-url)."
+    description: >-
+      LLM provider: anthropic, openai, openai_responses, bedrock, gemini, mistral, litellm,
+      llamaapi, ollama, llamacpp or writer.
     required: true
   llm-model:
-    description: "Override the LLM model id (blank = provider default)."
+    description: "Model id served by that provider, e.g. claude-sonnet-5, gpt-5, gemini-2.5-pro."
+    required: true
+  llm-api-key:
+    description: "Your API key for that provider. Pass a repository secret."
+    required: true
+  llm-base-url:
+    description: "Optional proxy / gateway / OpenAI-compatible endpoint."
     required: false
     default: ""
-  llm-base-url:
-    description: "Override the LLM base URL (proxy / gateway / Bedrock / Azure / OpenAI-compatible endpoint)."
+  llm-context-window:
+    description: "Optional context window of the model, in tokens (tunes automatic context compression)."
+    required: false
+    default: ""
+  target:
+    description: "Path, lockfile or package spec to inspect. Blank = the checked-out repository."
+    required: false
+    default: ""
+  with:
+    description: >-
+      Complementary analyses, comma-separated: authorship (code-style authorship analysis of
+      every direct dependency), vuln-hunt (unreported-vulnerability hunting + independent
+      verification), transitive (extend both to transitive deps), github (GitHub MCP tools
+      for subagents; uses github-token), all.
     required: false
     default: ""
   exclude:
     description: >-
-      Gitignore-syntax patterns to exclude from discovery, one per line. Layers on top
-      of any `.safescignore` file committed at the target root (which is auto-discovered
-      with no input needed) — use this input for one-off/CI-level excludes instead.
-      Useful for excluding paths that deliberately look like real dependency files
-      (e.g. test fixtures for a supply-chain-security tool auditing its own repo).
+      Gitignore-syntax patterns to exclude from discovery, one per line. Layers on top of
+      any `.safescignore` committed at the target root.
     required: false
     default: ""
-  # --- optional memory layer (CLAUDE.md §3.6) ----------------------------------------
-  # All blank by default = the store-free tier, which is what GitHub-hosted runners want.
-  # These matter when SafeSC can reach a store that OUTLIVES the job: a managed Redis /
-  # Postgres, or a self-hosted runner beside your own instances. A `services:` container
-  # is NOT useful here — it is recreated per job, so the cache starts empty, checkpoints
-  # are unreachable and rate limiting is scoped to a single run.
-  redis-url:
-    description: >-
-      Redis URL. Enables checkpointing (for `resume`), fleet-wide per-registry rate
-      limiting, the 7-day cross-run cheap-signal cache, and exact-hash recall of prior
-      verdicts. Needs no second API key. Pass a repository secret.
+  fail-on:
+    description: "Fail the gate at this severity: LOW | MEDIUM | HIGH | CRITICAL."
     required: false
-    default: ""
-  pgvector-dsn:
-    description: >-
-      Postgres/pgvector DSN. Adds similarity search over prior findings and the
-      known-attack fingerprint corpus. Requires embedding-api-key. Pass a secret.
-    required: false
-    default: ""
-  embedding-api-key:
-    description: "BYOK embedding-provider key. Required whenever pgvector-dsn is set. Pass a secret."
-    required: false
-    default: ""
-  embedding-model:
-    description: "Embedding model id (blank = voyage-4-large). Must match embedding-dim."
-    required: false
-    default: ""
-  embedding-base-url:
-    description: "Embedding provider base URL (blank = Voyage; set for an OpenAI-compatible endpoint)."
-    required: false
-    default: ""
-  embedding-dim:
-    description: >-
-      pgvector column width. MUST match the embedding model — changing it means a
-      re-index, not a hot swap, even within the voyage-4 shared embedding space.
-      Blank = 1024 (the voyage-4 family default).
-    required: false
-    default: ""
-  memory-strict:
-    description: >-
-      Fail the run when a configured store is unreachable, instead of warning and
-      auditing store-free. Off by default because memory can only escalate a verdict,
-      never lower one, so its absence is always safe.
+    default: "HIGH"
+  strict:
+    description: "Treat an incomplete analysis as a gate failure."
     required: false
     default: "false"
-  store-init:
-    description: >-
-      Run `safesc store init` before auditing to create the pgvector schema. Off by
-      default: it needs DDL privileges, and the schema only has to be created once.
+  max-subagents:
+    description: "Subagent invocations allowed per run (cost ceiling)."
     required: false
-    default: "false"
-
+    default: "40"
   github-token:
     description: >-
-      Token used to authenticate SafeSC's GitHub REST calls (Stage-3 popularity signals:
-      repo archived status, stars, last push). Defaults to the job's own GITHUB_TOKEN,
-      which is all this needs. Authenticating matters more than it looks: anonymous API
-      access is 60 requests/hour per IP, shared across GitHub-hosted runners, so a repo
-      of any size exhausts it and the archived-repo check silently returns nothing on
-      every run. Popularity is re-collected each run by design (§3.1), so an anonymous
-      audit loses that signal permanently rather than once. Override only to supply a PAT.
+      Token for SafeSC's GitHub calls (popularity signals; the GitHub MCP server with
+      `with: github`). The job token is enough; anonymous access is 60 requests/hour per IP.
     required: false
     default: ${{ github.token }}
-
   report-dir:
-    description: "Directory to write JSON / Markdown / SARIF report artifacts."
+    description: "Directory to write JSON / Markdown / SARIF reports."
     required: false
     default: "safesc-reports"
   format:
@@ -114,8 +79,8 @@ inputs:
     default: "3.12"
   upload-sarif:
     description: >-
-      Upload the SARIF report to GitHub code scanning (needs the caller job to grant
-      `permissions: security-events: write`). Set to "false" to skip.
+      Upload the SARIF report to GitHub code scanning (needs `permissions: security-events:
+      write`). Set to "false" to skip.
     required: false
     default: "true"
   upload-artifact:
@@ -129,7 +94,7 @@ inputs:
 
 outputs:
   exit-code:
-    description: "SafeSC exit code (0 = gate pass, 1 = gate fail on critical finding)."
+    description: "SafeSC exit code (0 = pass, 1 = gate failed, 2 = configuration error or no verdict)."
     value: ${{ steps.run.outputs.exit-code }}
 
 runs:
@@ -137,9 +102,7 @@ runs:
   steps:
     # Preflight the two things that make a later SARIF upload fail, and warn NOW (before the
     # slow install + audit) instead of only after the upload. A read probe of the
-    # code-scanning API with the job token distinguishes both causes by its 403 message:
-    #   * "Resource not accessible by integration" → missing security-events: write
-    #   * "Advanced Security must be enabled …"     → code scanning not available (private, no GHAS)
+    # code-scanning API with the job token distinguishes both causes by its 403 message.
     # This never fails the run — it only emits ::warning:: annotations.
     - name: Preflight SARIF / code scanning readiness
       if: >-
@@ -181,86 +144,59 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    # Tier-2 by default (CLAUDE.md §3.6) — no Redis, no Postgres, no checkpointer, which
-    # is what a GitHub-hosted runner wants. The `memory` extra (redis / psycopg / voyageai /
-    # langgraph-checkpoint-postgres) is pulled ONLY when a store is actually configured, so
-    # consumers who do not use one never pay for its install.
+    # One install for every use: the agent runtime and every supported provider SDK.
     - name: Install SafeSC
       shell: bash
-      env:
-        REDIS_URL: ${{ inputs.redis-url }}
-        PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
       run: |
         python -m pip install --upgrade pip
-        # The orchestration 'agent' extra plus both built-in provider SDKs (the consumer
-        # picks one via llm-provider; there is no default provider, BYOK — §3.5). Unused
-        # SDKs are never imported.
-        extras="agent,anthropic,openai"
-        if [ -n "$REDIS_URL" ] || [ -n "$PGVECTOR_DSN" ]; then
-          extras="${extras},memory"
-          echo "SafeSC: tier-3 runtime (memory extra installed)."
-        fi
-        python -m pip install "${GITHUB_ACTION_PATH}[${extras}]"
+        python -m pip install "${GITHUB_ACTION_PATH}"
 
-    # Opt-in, and skipped entirely without a DSN. Idempotent (CREATE ... IF NOT EXISTS),
-    # but it needs DDL privileges, so an audit must never do it implicitly.
-    - name: Initialise pgvector schema
-      if: inputs.store-init == 'true' && inputs.pgvector-dsn != ''
-      shell: bash
-      env:
-        SAFESC_PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
-        SAFESC_EMBEDDING_API_KEY: ${{ inputs.embedding-api-key }}
-        SAFESC_EMBEDDING_DIM: ${{ inputs.embedding-dim }}
-      run: safesc store init
+    # Memory is required. It is a plain directory, so the runner cache carries prior
+    # verdicts from run to run: each run restores the newest snapshot and saves its own.
+    - name: Restore SafeSC memory
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/safesc-memory
+        key: safesc-memory-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          safesc-memory-${{ runner.os }}-
 
-    - name: Run safesc audit
+    - name: Run safesc
       id: run
       shell: bash
       env:
-        # BYOK: the key stays in the caller's environment and never enters state/logs (§3.5).
-        SAFESC_LLM_API_KEY: ${{ inputs.llm-api-key }}
-        SAFESC_LLM_PROVIDER: ${{ inputs.llm-provider }}
-        SAFESC_LLM_MODEL: ${{ inputs.llm-model }}
-        SAFESC_LLM_BASE_URL: ${{ inputs.llm-base-url }}
-        # Memory layer (§3.6). Blank values are ignored by select_runtime, so leaving these
-        # unset is exactly the tier-2 path. A configured-but-unreachable store degrades with
-        # a warning unless memory-strict is on.
-        SAFESC_REDIS_URL: ${{ inputs.redis-url }}
-        SAFESC_PGVECTOR_DSN: ${{ inputs.pgvector-dsn }}
-        SAFESC_EMBEDDING_API_KEY: ${{ inputs.embedding-api-key }}
-        SAFESC_EMBEDDING_MODEL: ${{ inputs.embedding-model }}
-        SAFESC_EMBEDDING_BASE_URL: ${{ inputs.embedding-base-url }}
-        SAFESC_EMBEDDING_DIM: ${{ inputs.embedding-dim }}
-        SAFESC_MEMORY_STRICT: ${{ inputs.memory-strict }}
-        # Values reach the script through the environment, never by `${{ }}` interpolation
-        # into the `run:` body — a DSN, key or pattern containing shell metacharacters would
-        # otherwise be executed rather than passed.
-        # Lifts the GitHub API rate limit from 60/hour (anonymous, per runner IP) to
-        # 1000/hour. Read by tools/scan/signals/github.py, whose single call site targets
-        # a hardcoded api.github.com URL, so the token never reaches another host.
+        # BYOK: the key stays in the environment and never enters the ledger, memory,
+        # logs or reports. Values reach the script only through env, never `${{ }}`
+        # interpolation into the run body.
+        LLM_PROVIDER: ${{ inputs.llm-provider }}
+        LLM_MODEL: ${{ inputs.llm-model }}
+        LLM_API_KEY: ${{ inputs.llm-api-key }}
+        LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        LLM_CONTEXT_WINDOW: ${{ inputs.llm-context-window }}
+        SAFESC_MEMORY_DIR: ${{ runner.temp }}/safesc-memory
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        EXCLUDE_PATTERNS: ${{ inputs.exclude }}
         TARGET: ${{ inputs.target }}
+        WITH: ${{ inputs.with }}
+        EXCLUDE_PATTERNS: ${{ inputs.exclude }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        STRICT: ${{ inputs.strict }}
+        MAX_SUBAGENTS: ${{ inputs.max-subagents }}
         REPORT_DIR: ${{ inputs.report-dir }}
         REPORT_FORMAT: ${{ inputs.format }}
       run: |
         set +e
-        # One --exclude PATTERN pair per non-blank line of the `exclude` input.
-        exclude_args=()
+        args=(--report-dir "$REPORT_DIR" --format "$REPORT_FORMAT" --fail-on "$FAIL_ON" --max-subagents "$MAX_SUBAGENTS")
+        if [ -n "$TARGET" ]; then args=("$TARGET" "${args[@]}"); fi
+        if [ -n "$WITH" ]; then args+=(--with "$WITH"); fi
+        if [ "$STRICT" = "true" ]; then args+=(--strict); fi
         while IFS= read -r pattern; do
-          if [ -n "$pattern" ]; then
-            exclude_args+=(--exclude "$pattern")
-          fi
+          if [ -n "$pattern" ]; then args+=(--exclude "$pattern"); fi
         done <<< "$EXCLUDE_PATTERNS"
-        safesc audit "$TARGET" \
-          --report-dir "$REPORT_DIR" \
-          --format "$REPORT_FORMAT" \
-          "${exclude_args[@]}"
+        safesc "${args[@]}"
         code=$?
-        # Defer the gate's exit code so the report-publishing steps below still run;
-        # a later step re-applies it so the check still fails on a critical finding.
+        # Defer the gate's exit code so the publishing steps below still run; the last
+        # step re-applies it.
         echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
-        # Was a SARIF file actually produced? (only when format is all|sarif)
         if [ -f "$REPORT_DIR/safesc-report.sarif" ]; then
           echo "sarif-produced=true" >> "$GITHUB_OUTPUT"
         else
@@ -268,30 +204,22 @@ runs:
         fi
         exit 0
 
-    # Folded-in publishing so consumers need a single `uses:` step, not three (§CI wrapping).
-    # continue-on-error: uploading to code scanning needs `security-events: write` AND an
-    # environment where code scanning is available (public repo, or private + GitHub
-    # Advanced Security). When that's missing the API returns "Resource not accessible by
-    # integration" — that must NOT fail the audit, whose verdict is already in the exit code
-    # and whose reports are still archived below. The next step surfaces an actionable hint.
+    # continue-on-error: code scanning needs `security-events: write` and a repository
+    # where it is available. Its absence must not fail an audit whose verdict is already
+    # in the exit code and whose reports are archived below.
     - name: Upload SARIF to code scanning
       id: sarif
-      if: >-
-        always() && inputs.upload-sarif == 'true'
-        && steps.run.outputs.sarif-produced == 'true'
+      if: always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif-produced == 'true'
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.report-dir }}/safesc-report.sarif
 
     - name: Explain a skipped SARIF upload
-      if: >-
-        always() && inputs.upload-sarif == 'true'
-        && steps.run.outputs.sarif-produced == 'true'
-        && steps.sarif.outcome == 'failure'
+      if: always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif-produced == 'true' && steps.sarif.outcome == 'failure'
       shell: bash
       run: |
-        echo "::warning title=SafeSC SARIF upload skipped::Could not upload the SARIF report to GitHub code scanning. This does not affect the audit result (see the exit code) or the archived report artifact. Common causes: (1) the job lacks 'permissions: security-events: write'; (2) the repository is private without GitHub Advanced Security / code scanning enabled. Set upload-sarif: false to silence this."
+        echo "::warning title=SafeSC SARIF upload skipped::Could not upload the SARIF report to code scanning. The audit result (exit code) and the archived report are unaffected. Usual causes: missing 'permissions: security-events: write', or a private repository without code scanning."
 
     - name: Archive report artifacts
       if: always() && inputs.upload-artifact == 'true'

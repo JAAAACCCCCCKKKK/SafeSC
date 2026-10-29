@@ -1,26 +1,17 @@
 """Stage 0 — Dependency-file Discovery.
 
 Walks a repository root, asks each registered :class:`EcosystemAdapter` which
-glob patterns it owns, and collects every matching path.  At this stage the
-results are printed to stdout; later stages will consume the returned list.
-
-Usage (programmatic)::
-
-    from safesc.tools.index.core.discovery import discover
-    from pathlib import Path
+glob patterns it owns, and collects every matching path. Library code only: in
+SafeSC it runs through the ``discover_lockfiles`` agent tool
+(``safesc.agents.tools.pipeline``), never from an entrypoint directly.
 
     found = discover(Path("/path/to/repo"))
     # found -> [DiscoveredFile(path=..., ecosystem="python"), ...]
-
-Usage (CLI)::
-
-    python -m tools.index.core.discovery /path/to/repo
 """
 
 from __future__ import annotations
 
 import fnmatch
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -31,9 +22,8 @@ from safesc.tools.index.ecosystems.base import EcosystemAdapter
 
 # Gitignore-style ignore file auto-discovered at the SCANNED ROOT (not the SafeSC
 # install) — lets a consumer repo permanently exclude paths (e.g. test fixtures that
-# deliberately look like real dependency files) from every SafeSC entrypoint
-# (`index`, `scan`, `safesc audit`/`query`) with zero flags, since they all funnel
-# through this one `discover()`. Real-world incident that motivated this: SafeSC's own
+# deliberately look like real dependency files) from every SafeSC run with zero
+# flags, since discovery always funnels through this one `discover()`. Real-world incident that motivated this: SafeSC's own
 # self-audit workflow scans "." and was tripped up by its own synthetic attack-pattern
 # test fixtures under tests/fixtures/ — see CLAUDE.md.
 DEFAULT_IGNORE_FILENAME = ".safescignore"
@@ -179,9 +169,8 @@ def discover(
         Name of the gitignore-syntax file auto-discovered at *root*, if present.
         Defaults to ``.safescignore`` — lets a repo permanently exclude paths
         (e.g. test fixtures that deliberately look like real dependency files)
-        from every SafeSC entrypoint with zero flags, since discovery is the one
-        chokepoint every entrypoint (``index``, ``scan``, ``safesc audit``/``query``)
-        funnels through.
+        from every SafeSC run with zero flags, since discovery is the one
+        chokepoint every run funnels through.
 
     Returns
     -------
@@ -236,51 +225,3 @@ def discover(
                 break
 
     return sorted(found)
-
-
-# ── Pretty printer ────────────────────────────────────────────────────────────
-
-
-def print_discovered(files: list[DiscoveredFile], root: Path) -> None:
-    """Print *files* to stdout in a human-readable format."""
-    if not files:
-        print("No dependency files found.")
-        return
-
-    # Group by ecosystem for a cleaner display.
-    by_ecosystem: dict[str, list[DiscoveredFile]] = {}
-    for f in files:
-        by_ecosystem.setdefault(f.ecosystem, []).append(f)
-
-    total = len(files)
-    print(f"Found {total} dependency file{'s' if total != 1 else ''}:\n")
-
-    for ecosystem, items in sorted(by_ecosystem.items()):
-        print(f"  [{ecosystem}]")
-        for item in items:
-            rel = item.path.relative_to(root)
-            print(f"    {rel}  (matched: {item.matched_glob})")
-        print()
-
-
-# ── CLI entry-point ───────────────────────────────────────────────────────────
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Minimal CLI: ``python -m tools.index.core.discovery [<path>]``."""
-    args = argv if argv is not None else sys.argv[1:]
-    root = Path(args[0]) if args else Path.cwd()
-
-    root = root.resolve()
-    try:
-        files = discover(root)
-    except NotADirectoryError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    print_discovered(files, root)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -1,588 +1,394 @@
-# CLAUDE.md — SafeSC Project Development Rules (v2.12: Agent Architecture)
+# CLAUDE.md — SafeSC Project Development Rules (v3.0: Strands Agents)
 
-> **v2.12 (the memory layer, wired).** v2.6 landed the §3 store *clients* and marked the
-> layer done. It was not: nothing in the shipped `safesc` console script ever constructed
-> them, so `ShortTermStore.checkpointer()`, `SessionManager.try_acquire`, `cache_get`/
-> `cache_set` and the `kind='fingerprint'` record type all had **zero call sites**, and the
-> one path that *was* wired retrieved nothing — `report_agent` persisted under
-> `artifact_id` (`ecosystem:name@version+hash`) while the specialist looked up the bare
-> `dep_key`, so exact-hash recall missed its own record for every hashed dependency. Five
-> gaps, all now closed with code: (1) a **tier-3 runtime** (§3.6) that builds the stores
-> from `SAFESC_REDIS_URL`/`SAFESC_PGVECTOR_DSN` — each half independently useful, so Redis
-> alone already buys exact-hash verdict recall with no embedding key — (2) **checkpointing
-> that can resume**, via
-> a stable per-request thread key behind `--resume` (§3.1), (3) the **semaphores enforced**
-> at their call sites, including a new fleet-wide `sem:host:{host}` (§2.7.3, §5.2), (4) a
-> **curated known-attack fingerprint corpus** with an external ingest command (§3.2), and
-> (5) **prior-analysis reuse that hits** — the key fix above, plus the cross-run
-> cheap-signal cache the hot store was always meant to serve (§3.1).
+> **v3.0 (refactor onto Strands Agents).** The LangGraph state machine, the Redis/PGVector
+> memory tiers, the separate `audit`/`query`/`gc`/`store`/`fingerprint` subcommands, the
+> standalone `index`/`scan` CLIs and the `agent`/`anthropic`/`openai`/`memory` extras are
+> gone. SafeSC is now one install (`pip install safesc`), one command (`safesc`), and one
+> use case: an **orchestrator agent** (Strands `Agent`, model + harness) drives the run by
+> calling tools — the four static stages, read-only views, **six subagents** exposed as
+> tools (agents-as-tools), and `finalize_score`, which runs the deterministic scorer once.
+> Every run **requires** an LLM (`LLM_PROVIDER` / `LLM_MODEL` / `LLM_API_KEY`, validated in
+> a fixed order before anything starts) and **memory** (a local directory; Strands
+> `MemoryManager`, no service, no second key). Two new subagent capabilities extend scope:
+> **authorship verification** (code-style analysis against account takeover) and
+> **unreported-vulnerability hunting** with **independent verification**.
 >
-> The governing rule for all five, and the reason each failure mode was chosen the way it
-> was: **every memory and rate-limit failure degrades toward more analysis, never toward a
-> downgrade.** An unreachable store runs the audit store-free; a saturated width semaphore
-> runs the specialist anyway; a broken per-host gate lets the request through; a corrupt or
-> unreachable cache re-collects everything. The one place that fails *closed* is the LLM
-> budget, where denial skips a specialist and marks the run incomplete — which §2.5 already
-> establishes can only lose an escalation, never manufacture one. Fewer signals read as
-> *cleaner*, so no availability problem may ever be able to produce a passing gate.
-> Builds on v2.11.
-
-> **v2.11 (severity policy corrected before release).** Pre-release review of v1.2.1
-> caught that v2.9 shipped the new rust `links` signal at **HIGH**, mirroring npm. That
-> was wrong, and the blast radius was measured: HIGH is `ScoreConfig.fail_threshold`, so
-> **every** project depending on a `links`-declaring crate — `openssl-sys`, `ring`,
-> `libz-sys`, i.e. a large share of real Rust trees — would have started failing its CI
-> gate on upgrade, with no path back down because §4.3 is escalate-only. Rust is now
-> **MEDIUM**, alongside python. The governing rule is now stated explicitly in
-> `install_script.py` and pinned by a test
-> (`test_only_optedin_code_execution_can_fail_a_gate`): **only opted-in code execution
-> may reach the gate.** An npm lifecycle hook exists for no purpose other than running
-> code, so it stays HIGH; a Cargo `links` key and an sdist-only release are routine
-> *build-system facts* on ubiquitous legitimate packages, so they inform the §2.2-B gray
-> zone and are resolved by the BehaviorAgent instead. Same principle as
-> `typosquat.py`'s long-standing MEDIUM cap. Builds on v2.10.
-
-> **v2.10 (Stage-3 behavior gap closed — as a split decision).** The residual v2.9 gap is
-> now resolved, but **not** by implementing both halves — measurement showed one half
-> should not be built. **Python: implemented.** `InstallScriptCollector` now flags a
-> resolved version that publishes an sdist but **no wheel**, because pip must then build
-> from source and execute the project's PEP 517 backend / `setup.py` (a wheel is only
-> unpacked and runs no project code). It is derived from the `releases` payload
-> `_pypi_package_metadata` already fetches, so it costs **zero extra HTTP requests**, and
-> it is emitted at **MEDIUM**, not HIGH — a packaging choice must land in the §2.2-B gray
-> zone for BehaviorAgent verification, never fail a CI gate alone (cf. `typosquat.py`'s
-> identical MEDIUM cap). Measured precision on a real dependency set: **0 of 45** flagged,
-> while correctly firing on genuinely sdist-only releases (`pycparser==2.14`,
-> `python-Levenshtein==0.12.0`), all verified live. **Rust: closed as won't-do, with
-> evidence.** See §9 — broadening it would actively harm the tool. Builds on v2.9.
-
-> **v2.9 (two v2.7 findings closed).** Both undecided gaps recorded when the v2.7
-> attack-pattern fixtures landed are now resolved with real code, not documentation:
-> (1) `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` now includes `cargo.toml`, so a normal
-> Rust project (`Cargo.toml` + `Cargo.lock`, the common case) no longer trips a spurious
-> "0 dependencies" degraded note on every audit. (2) `InstallScriptCollector`
-> (`tools/scan/signals/behavior/install_script.py`) now covers **rust** as well as
-> javascript: crates.io exposes a `lib_links` field per version, which mirrors the
-> crate's Cargo.toml `links` key — and Cargo *requires* a build script whenever `links`
-> is set, making non-null `lib_links` a sound (if incomplete — pure-codegen build
-> scripts with no `links` key aren't caught) zero-false-positive Stage-3 proxy, verified
-> live against crates.io (`openssl-sys`/`libz-sys` flagged, `serde`/`log` not).
-> `tests/test_attack_fixtures.py`'s two behavior fixtures now run this real collector
-> (network mocked) instead of a hand-built stand-in signal — see §9.
-
-> **v2.8 (discovery exclude landed).** Landing the v2.7 attack-pattern fixtures
-> immediately surfaced a real gap: SafeSC's own self-audit workflow (`safesc.yml`,
-> target `.`) has no way to exclude paths, so it started (correctly!) flagging its own
-> deliberately-adversarial test fixtures as findings. `tools/index/core/discovery.py`'s
-> `discover()` now auto-loads a gitignore-syntax `.safescignore` file from the scanned
-> root (via the new `pathspec` dependency), plus an optional `exclude` list that layers
-> on top (CLI: repeatable `--exclude PATTERN` on `index`/`scan`/`safesc audit`/`query`;
-> Action: the `exclude` input). Because every entrypoint funnels through the one
-> `discover()` chokepoint, committing a `.safescignore` fixes all of them at once with no
-> flag required — see §2.1. This repo's own `.safescignore` now excludes
-> `tests/fixtures/attacks/`. See §9.
-
-> **v2.7 (attack-pattern fixtures landed).** The §9 item "end-to-end walkthrough vs. XZ
-> Utils / event-stream / PyTorch dependency confusion" is now **resolved for the
-> offline/stubbed-LLM case**: `tests/fixtures/attacks/{obfuscated_build,
-> poisoned_install_hook,name_confusion,clean_baseline}/` are synthetic, inert fixtures
-> reproducing the *structural* shape of a build-script payload, a poisoned install hook,
-> and a typosquat, plus a negative control; `tests/test_attack_fixtures.py` chains the
-> real spine nodes (`index_node`→`hash_verify_node`→`cheap_signals_node`→`gate_node`,
-> §2.2-B) with their real Annotated reducers (§2.6), the real post-Stage-3 gate
-> (`plan_gate`), a real specialist (`behavior_agent`/`identity_agent`) with a stubbed
-> `SpecialistDeps.llm`, and the real scorer (`report_agent.score`) — proving the whole
-> v1-signal→graph-adapter→gate→fusion→scorer spine actually detects these patterns and
-> that a clean project stays clean. Runs fully offline, no key, no network, in the
-> default `pytest tests/` job (no marker). Two genuine, undecided coverage gaps were
-> found while building the fixtures and are recorded below rather than silently patched;
-> a real-LLM run against the same fixtures remains open. Builds on v2.6 (stores landed).
-
-> **v2.6 (stores landed).** The two §3 store clients are now **implemented and unit-tested**: `memory/short_term.py` (`ShortTermStore` — the injectable Redis seam serving the hot cache, the checkpointer factory, and the SessionManager's ZSET ops via one client) and `memory/long_term.py` (`PGVectorStore` — `query_similar`/`upsert`/`get`/`gc` over a plain DB-API connection, vectors written as `::vector` literals, defense-in-depth `GREATEST` max-wins, §3.4 differentiated-retention GC). Both use **lazy imports** so the core stays installable without the new optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-redis); both are consumed by the MemoryManager purely via **injection** (§6.1.6). `MemoryManager.gc()` now delegates to the vector store so `safesc gc` (§3.4) is wired end-to-end. What remains is **deployment**, not code: a live Redis/Postgres instance, a pinned embedding model+dimension, and the similarity cutoff. Builds on v2.5 (harness + memory-manager).
-
-> **v2.5 (harness + memory landed).** The four Harness components (§2.7) and the Memory Manager's read/write paths are now **implemented and unit-tested**, moving §2.7 and §3 from design to code: `graph/harness/{constraint_validator,auto_repair,session_manager,memory_manager}.py`. The constraint validator's repair loop is independent of auto-repair (no retry storm); semaphores use the self-healing ZSET-token pattern; memory persists only escalated + high-popularity-benign records with max-wins/anomaly-flagging. The stores themselves (a live Redis/PGVector deployment) and the FastAPI entrypoints remain the last ⛔ items. Builds on v2.4 (BYOK).
-
-> **v2.4 (BYOK).** All hosted-model services are now **bring-your-own-key**: the caller supplies the reasoning-LLM key and (when memory is on) the embedding key per invocation; SafeSC holds no server-side/ambient key. Keys are `SecretStr`, threaded via injection only, and **never enter `AuditState`** (which is checkpointed to Redis), logs, or PGVector. Landed: `security/credentials.py`, `graph/llm_client.py` (concrete BYOK Claude client), `memory/embedding_client.py` (BYOK seam). See §3.5. Builds on v2.3's harness/memory design.
-
-> **v2.3 (design sync).** The Harness Layer (§2.7) is expanded from three bullets into four specified components, adding a **Memory Manager** (§2.7.4) as the single read/write point for the §3 stores. The memory read/write paths, embedding source, and GC strategy are now pinned: embeddings come from an **external provider API (BYOK, see §3.5)** (Voyage AI for the Claude stack — Anthropic has no first-party embeddings endpoint — kept provider-swappable, §3.2); long-term GC runs as a **Kubernetes CronJob** (§3.4). These are **design-level** decisions; the harness and memory modules remain ⛔ unimplemented (§0.1). Builds on v2.2's landed agent-layer code (state, router, spine, specialists, scorer).
-
-This document supersedes the v1 CI-pipeline-only rules. It defines the architectural and development constraints for **SafeSC** as it evolves from a one-shot CI pipeline into an **agentic dependency-audit system**. Stages 0–3 (Discovery, Parse & Normalize, Hash Verification, Cheap Signals) are frozen, packaged as deterministic tools, and reused unchanged by the new agent layer. All code contributions must conform to the boundaries defined here.
-
-The single most important thing to understand before reading further: **the agent layer changes *how work is scheduled*, not *how decisions are made*.** Every v1 iron rule about the scorer being the sole decision point and the LLM only escalating (never downgrading) survives verbatim. The graph is a scheduler on top of the v1 signal→scorer model, not a replacement for it.
+> The governing idea is unchanged from v2: **the agent layer changes how work is scheduled,
+> not how decisions are made.** Static stages are now *invoked* by an agent, but an agent
+> still cannot skip, redirect or reorder them, cannot finalize early, and cannot write a
+> severity. Every iron rule below survives; §2.5 explains how each is now enforced.
 
 ---
 
-## 0. Migration Note (v1 → v2)
+## 0. Migration Note (v2 → v3)
 
-| Aspect | v1 | v2 |
+| Aspect | v2 (LangGraph) | v3 (Strands) |
 |---|---|---|
-| Execution model | One CI run, one execution, then exit | CI audit **and** interactive query, both finite (still no daemon) |
-| Stages 0–3 | Inline pipeline code | Frozen, wrapped as typed deterministic tools |
-| Stage 4 (LLM deep analysis) | Single step | Fan-out to per-dimension LLM specialist nodes |
-| Stage 5 (Report/Gate = scorer) | Final pipeline step | Terminal reducer node; still the only decision point |
-| Orchestration | Sequential function calls | LangGraph state machine |
-| Signal → scorer flow | Static + LLM signals → scorer | **Unchanged.** Graph nodes are just signal producers |
-| Cache | In-process / filesystem / S3 | Redis (short-term) + PGVector (long-term) |
-| Concurrency | Local per-host semaphores | Redis-backed distributed semaphores |
-
-**v1 §1.3 ("No real-time monitoring / agent mode") is revised.** SafeSC gains an agent mode, but every execution is still **triggered and finite** — a CI event or an explicit CLI query — never a persistent monitor. (A hosted HTTP API is out of scope for this repo; it lives in a separate private repo that only exposes endpoints / a Docker image.)
+| Install | `pip install "safesc[agent,anthropic,memory]"` | `pip install safesc` — all providers, one install |
+| Entry | `safesc audit\|query\|gc\|store\|fingerprint`, `index`, `scan` | `safesc [target] [--with …] [flags]` |
+| Target | explicit, `.` default | cwd interactively, repo root in CI (`core/targets.py`) |
+| Static stages | fixed graph nodes (spine) | agent-only tools with hard ordering (`agents/tools/pipeline.py`) |
+| Orchestration | compiled state graph, deterministic fan-out | orchestrator agent + steering guard + GoalLoop |
+| Stage 4 | one LLM call per (dep, dimension) | subagents with their own tool loop, structured output, repair |
+| LLM config | `SAFESC_LLM_*`, optional | `LLM_PROVIDER`/`LLM_MODEL`/`LLM_API_KEY`, required, validated |
+| Memory | optional Redis + PGVector + embedding key | required, local files, Strands MemoryManager, no key |
+| State | `AuditState` + Annotated reducers | `RunLedger` (thread-safe, same merge rules) |
+| Scorer | `report_agent` node | `core/scoring.py`, triggered once by `finalize_score` |
+| New analyses | — | authorship, vuln hunter + verifier |
 
 ### 0.1 Build Status
 
 | Component | Location | Status |
 |---|---|---|
-| Stages 0–3 (index + scan) | `tools/index/`, `tools/scan/` | ✅ v1, frozen |
-| Stage-4 evidence primitives | `tools/deep_analysis_tool.py` | ✅ implemented, unit-tested |
-| Shared state + channel reducers | `graph/state.py` | ✅ implemented, unit-tested |
-| Entry router (scope only) | `graph/router.py` | ✅ implemented, unit-tested |
-| Deterministic spine (Stage 0→3 + gate) | `graph/spine.py` | ✅ implemented, unit-tested |
-| Stage-4 specialists (Identity/Behavior/Provenance) | `graph/specialists/` | ✅ implemented, unit-tested |
-| Scorer / report_agent | `graph/report_agent.py` | ✅ implemented, unit-tested |
-| BYOK credentials + LLM client | `security/credentials.py`, `graph/llm_client.py` | ✅ implemented, unit-tested (§3.5) |
-| Harness (validator / auto-repair / session / memory-mgr) | `graph/harness/` | ✅ implemented, unit-tested (§2.7) |
-| Memory Manager (read/write logic) | `graph/harness/memory_manager.py` | ✅ implemented, unit-tested (§2.7.4) |
-| Graph assembly + `run()` seam | `graph/build.py` | ✅ implemented, unit-tested (§6.1.4) |
-| Memory store clients (Redis + PGVector) | `memory/short_term.py`, `memory/long_term.py` | ✅ implemented, unit-tested (§3.1, §3.2); consumed by MemoryManager via injection |
-| Store wiring (tier-3 runtime, checkpointer, semaphore call sites, signal cache) | `entrypoints/bootstrap.py`, `graph/build.py`, `graph/spine.py` | ✅ implemented, unit-tested (§3.6) |
-| Known-attack fingerprints (corpus + ingest) | `memory/fingerprints.py`, `fingerprints/` | ✅ implemented, unit-tested (§3.2) |
-| Live store deployment (a running Redis/Postgres instance) | infra | ⛔ ops only — `safesc store init` creates the schema |
-| Embedding client (BYOK seam) | `memory/embedding_client.py` | ◑ seam built; called by MemoryManager |
-| Entrypoints (`cli.py`) | `entrypoints/` | ✅ implemented (CLI; the HTTP API lives in a separate private repo) |
-| Reporter (SARIF / Markdown / JSON) | `reporter/` | ✅ implemented, unit-tested (§6, §7) |
-
-Design decisions locked in by the landed code (details in-section): the unified `Signal` format (§2.3, §4.3), max-wins escalation merge (§2.6), sum-delta LLM-call counting (§5.3), and rule-based risk-independent scope routing (§2.2-A).
+| Stages 0–3 library (index + scan) | `safesc/tools/index/`, `safesc/tools/scan/` | ✅ v1, frozen (library only, no entrypoint) |
+| Stage-4 evidence primitives | `safesc/tools/deep_analysis_tool.py` | ✅ |
+| Source fetching / risky-pattern scan / stylometry | `safesc/tools/{source,vulnscan,authorship}.py` | ✅ new, LLM-free |
+| Deterministic core (signals, ledger, gate, scorer, targets) | `safesc/core/` | ✅ |
+| LLM configuration + validation | `safesc/config/llm.py` | ✅ (all 11 Strands API-key providers) |
+| Memory (verdict store, known-attack store, manager) | `safesc/memory/` | ✅ |
+| Agent tools (pipeline, views, evidence, external, scoring) | `safesc/agents/tools/` | ✅ |
+| Harness (steering guard, validation, progress) | `safesc/agents/harness/` | ✅ |
+| Six subagents | `safesc/agents/specialists/` | ✅ |
+| Orchestrator + `run_audit` | `safesc/agents/orchestrator.py` | ✅ |
+| CLI | `safesc/cli.py` | ✅ |
+| Reporter (SARIF / Markdown / JSON) | `safesc/reporter/` | ✅ (schema 2.0) |
 
 ---
 
 ## 1. Project Scope and Boundaries
 
 ### 1.1 Goal
-Discover dependency lockfiles, traverse dependencies, evaluate trust across five dimensions, identify social-engineering and dependency-injection indicators, and either (a) gate a CI pipeline, or (b) answer an interactive investigation query — using the same deterministic signals and the same scorer in both modes. The agent reasons about *what to investigate*, never *what the verdict is*.
+Discover dependency lockfiles, evaluate every dependency across five trust dimensions,
+investigate suspicious ones with LLM subagents (including account-takeover authorship
+analysis and unreported-vulnerability hunting), and produce **one deterministic score per
+run** that can gate CI. The agent reasons about *what to investigate*, never *what the
+verdict is*.
 
-### 1.2 Clear Differentiation
-Unchanged from v1: reuse Syft/OSV.dev; core value is multi-dimensional trust scoring + LLM intent analysis; blind-spot coverage is malicious behavioral intent + broken provenance. v2 additionally reuses LangGraph/LangChain instead of building a bespoke agent runtime.
+### 1.2 Differentiation
+Reuse OSV.dev and the registries for known facts; SafeSC's value is multi-dimensional
+trust scoring, LLM intent analysis, authorship verification and hidden-vulnerability
+discovery. Reuse Strands Agents instead of a bespoke agent runtime.
 
-### 1.3 Hard Scope Constraints (revised)
-- **Two run modes, both finite**: `audit` (CI trigger, full repo, produces exit code) and `query` (interactive, single question, evidence only — **no exit code, no gate**). See §6.2.
-- **Multi-language support**: ecosystem logic stays plugin-based (unchanged).
-- **Custom registry support**: unchanged.
-- **Bounded agent autonomy**: agents choose *which Stage-4 specialists to invoke and in what order*. They may **not** reorder or skip Stages 0–3, invent gate logic, or bypass the scorer. See §2.5 for why this boundary is a security property, not just tidiness.
-
-### 1.4 First-Release Priority
-Unchanged: Python (uv/poetry/pip) → npm/pnpm → Cargo → Go modules → Maven/Gradle.
+### 1.3 Hard Scope Constraints
+- **One use case, finite.** A run is triggered (CLI or CI), audits one target, exits with
+  0 (pass) / 1 (gate failed) / 2 (configuration error or no verdict). No daemon, no
+  persistent monitor. A hosted HTTP API is out of scope for this repo.
+- **LLM and memory are mandatory.** No run starts without a validated model (§3.5) and a
+  writable memory directory (§3).
+- **Complementary features are flags**, chiefly `--with authorship|vuln-hunt|transitive|github|all`.
+- **Bounded autonomy**: agents choose which subagents to call beyond the required set, in
+  what order, with what focus. They may not skip/reorder/redirect the static stages,
+  finalize early, finalize twice, or write a severity (§2.5).
+- **Multi-language, plugin-based ecosystems**; first-release priority unchanged:
+  Python → npm/pnpm → Cargo → Go → Maven/Gradle.
 
 ---
 
-## 2. Architecture: Deterministic Spine + Agentic Fan-Out
+## 2. Architecture: Deterministic Core, Agentic Scheduling
 
-The v1 pipeline is preserved as a **fixed deterministic spine**. Agent discretion is confined to a single, well-bounded region: choosing which LLM specialists examine the small suspicious subset after the Stage-3 gate.
+### 2.1 Static Stages as Agent-Only Tools
 
-### 2.1 Stages 0–3 as Deterministic Tools (frozen)
-
-| Tool | Wraps | LLM? | Output |
+| Tool | Stage | LLM? | Writes to the ledger |
 |---|---|---|---|
-| `discover_lockfiles` | Stage 0 | no | lockfile paths |
-| `parse_normalize` | Stage 1 | no | unified `Dependency[]` |
-| `verify_hash` | Stage 2 | no | provenance signals |
-| `collect_cheap_signals` | Stage 3 | no | identity/behavior/provenance/popularity/vulnerability **static** signals |
+| `discover_lockfiles` | 0 | no | lockfile refs |
+| `parse_dependencies` | 1 | no | `Dependency[]` (+ empty-lockfile coverage gaps) |
+| `verify_hashes` | 2 | no | provenance signals |
+| `collect_signals` | 3 | no | static signals, all five dimensions (+ degraded-collector gaps) |
 
-All four are LangChain `@tool` functions with strict Pydantic I/O. They must stay pure, **idempotent, and LLM-free** — idempotency matters now because a nondeterministic agent may retry them. This is v1 §4.4's "forbidden for LLM" list, now enforced *structurally* by the tool boundary rather than by convention.
+The implementations stay in `safesc/tools/` — pure, idempotent, LLM-free (v1 §4.4's
+"forbidden for LLM" list). **They are invoked only by agents**: no entrypoint imports
+them; only `agents/tools/pipeline.py` does (pinned by `tests/test_invariants.py`). The
+tools take **no target argument** — the target is fixed in `RunOptions` before any agent
+starts — and each refuses to run before its predecessor. They return compact summaries;
+full results stay in the ledger.
 
-**Excluding paths from Stage 0 discovery** *(implemented: `tools/index/core/discovery.py`, v2.8)*: `discover()` auto-loads a gitignore-syntax `.safescignore` file from the scanned root (no flag needed — every entrypoint funnels through this one function, so committing the file fixes `index`, `scan`, and `safesc audit`/`query` at once), plus an optional caller-supplied `exclude` list (CLI: repeatable `--exclude PATTERN`; Action: the `exclude` input) that layers on top. Matching uses `pathspec` (real gitignore semantics) rather than hand-rolled globbing. This exists because SafeSC's own self-audit workflow (`.github/workflows/safesc.yml`, target `.`) has no way to know a path is deliberately adversarial test data rather than a real dependency — see the repo's own `.safescignore`, which excludes `tests/fixtures/attacks/` (the v2.7 attack-pattern fixtures, §9) for exactly this reason. `InjectedTools.discover`'s single-arg contract (`Callable[[str], list[LockfileRef]]`) is unchanged by this — `exclude` is baked in at `load_default_tools(exclude=...)` construction time, not threaded through the call, so it never touches `AuditState`/`AuditRequest` and every existing fake keeps working unmodified.
+**Excluding paths**: `discover()` auto-loads `.safescignore` (gitignore syntax via
+`pathspec`) from the scanned root, plus `--exclude` patterns baked into `RunOptions`.
+`collect_signals` notes degraded collectors (a collector that could not answer is not a
+clean result) except popularity, whose anonymous GitHub limits are routine.
 
 ### 2.2 The Two Routing Decisions (kept distinct on purpose)
 
-v2 has **two** separate branch points. Conflating them was the main design error to avoid:
+**(A) Target — known at start, no risk involved** (`core/targets.py`). No argument:
+the current directory interactively, the repository root in CI (`GITHUB_WORKSPACE` /
+`CI_PROJECT_DIR` / `BUILD_SOURCESDIRECTORY` / git top-level; CI detected from the
+standard env markers). Then a rule-based, risk-free classification: path / lockfile →
+repository; package spec (`npm:x@1`, `pkg:pypi/x@1`, `@scope/x@1`) → single package.
 
-**(A) Entry router — splits on request *scope*, known at entry, no risk involved.** *(implemented: `graph/router.py`)*
-- `query` for a single package, or a direct question → **single-agent path**.
-- `audit` over a full repo → **full-spine path**.
-This is pure decomposition. It cannot depend on risk, because *no signals have been collected yet* — you cannot know a package is a dependency-confusion candidate until Stage 3 has run. The shipped classifier is **rule-based and risk-independent** (package-spec/purl/npm-scope → single; git URL/lockfile path/`.` → repo; override wins; ambiguous falls back on mode intent). Mode (audit vs query) is orthogonal to scope — it only decides whether a CI gate + exit code is produced, so a read-only query over a full repo is allowed.
+**(B) Risk gate — known only after Stage 3** (`core/gate.py`). `plan_triage` lists every
+(dep, dimension) whose *static* severity on identity/behavior/provenance is in the gray
+band `[gray_floor=MEDIUM, decided_ceiling=CRITICAL)`. These, plus the `--with` features
+(authorship / vuln-hunt on direct deps, or all deps with `transitive`) and every pending
+vulnerability candidate, form the ledger's **required coverage**. `finalize_score` is
+refused until each required item has been attempted (ok, degraded or denied) or the
+subagent budget is spent; what remains is reported as incomplete.
 
-**(B) Post-Stage-3 gate — splits on *risk*, known only after cheap signals.**
-This is v1 §2.2's tiered trigger, unchanged: the vast majority of deps are low-risk and skip Stage 4; only gray-zone deps fan out to LLM specialists. **This is where "complexity" actually enters** — and it enters as a data-driven gate, not an entry-time guess.
+### 2.3 Subagents (`agents/specialists/`)
 
-Keeping (A) and (B) separate is what makes the design coherent: scope is a routing concern, risk is a scorer concern, and they live in different places.
+Agents-as-tools (Strands lesson 10): each call builds a fresh `Agent` with its own context,
+model client, the shared evidence toolbox, read-only memory (injection + recall) and a
+structured output model. The tool's description is the orchestrator's routing logic.
 
-### 2.3 Stage-4 Specialists (the fan-out targets)
+| Tool | Role | Output | Lands on |
+|---|---|---|---|
+| `identity_analyst` | squat vs legitimate; coercive docs | `LLMOutput` | identity |
+| `behavior_analyst` | install-time / obfuscated code intent | `LLMOutput` | behavior |
+| `provenance_analyst` | artifact-vs-source, commit consistency | `LLMOutput` | provenance |
+| `authorship_analyst` | was the release written by its maintainers? (account takeover) | `LLMOutput` | identity |
+| `vuln_hunter` | unreported vulnerabilities in the dep's own source | `HuntReport` (candidates) | — (candidates only) |
+| `vuln_verifier` | independently confirm/refute every pending candidate | `VerificationReport` | vulnerability (or behavior for a backdoor) |
 
-After the gate, each gray-zone dependency fans out to the LLM specialists relevant to *why it was flagged*:
+There is still **no popularity agent and no CVE agent**: popularity and known-advisory
+matching stay fully deterministic. Every subagent is a **signal producer**; none decides.
 
-- `IdentityAgent` — LLM analysis of name-squatting intent, maintainer-handover social engineering
-- `BehaviorAgent` — install-script intent, deobfuscation, env-exfil reasoning
-- `ProvenanceAgent` — commit/diff consistency, source-vs-artifact narrative gaps
+### 2.4 The Scorer Is the Only Decision Point
 
-**Note there is deliberately no `PopularityAgent` and no standalone `VulnerabilityAgent`.** Popularity (download counts, stars, Scorecard) and vulnerability (OSV/CVE table lookup, EOL) are **fully deterministic** — v1 §4.4 forbids the LLM from doing them. They are collected entirely in Stage 3 / `collect_cheap_signals` and never need an LLM node. Having an agent per dimension would have duplicated Stage-3 work; instead, specialists exist **only for the three dimensions that have genuine LLM tasks.**
+`core/scoring.py:score(ledger)` is the only code that computes a verdict; `finalize_score`
+is the only code that writes one (`RunLedger.finalize`, write-once — pinned by
+`tests/test_invariants.py`). Rules: per-dep severity = max over its signals (weakest-link);
+gate fails at `--fail-on` (default HIGH); trust score = 100 − Σ penalty(LOW 1, MEDIUM 4,
+HIGH 15, CRITICAL 40), capped at 59 by any HIGH, 19 by any CRITICAL, 89 when incomplete;
+grade A≥90 B≥75 C≥60 D≥40 else F; `--strict` turns incompleteness into failure.
 
-Critically (v1 §5.1.3): **each specialist is a signal producer.** Its structured output (§4.2) is the LLM-detection analogue of a Stage-3 static signal. Both feed the scorer identically. A specialist never "decides" anything. The unified `Signal` format both origins share, and the `Signal.from_llm_output()` adapter that maps a §4.2 output through the §4.3 fusion table, are already in `graph/state.py`; a specialist's remaining job is (a) call the `tools/deep_analysis_tool.py` primitives for its dimension, (b) reason, (c) emit a §4.2 `LLMOutput`.
+### 2.5 Why Bounded Autonomy Is a Security Property
 
-### 2.4 The Scorer Is Still the Only Decision Point
+Threat: crafted package metadata steers the agent's control flow — skip hash
+verification, scan a decoy path, stop before analysis, or finalize a pass early. v2
+removed the choice entirely (a fixed graph). v3 lets the orchestrator *call* the stages,
+so each escape route is closed structurally instead:
 
-`ReportAgent` is the terminal reducer and **is the scorer** (v1 §5.1.4). Every static signal (Stages 0–3) and every LLM signal (Stage-4 specialists) converges here. It applies the v1 decision matrix (§3.4) and fusion table (§4.3) deterministically. Nothing else in the graph may compute or emit a gate decision. Naming it an "agent" is a convenience — it runs no LLM and has no discretion.
+| Attack | Why it fails |
+|---|---|
+| skip a stage | `finalize_score` refuses without all four; no finalize = no verdict = exit 2 |
+| reorder / repeat | each tool refuses out-of-order calls; the guard refuses repeats |
+| redirect the scan | stage tools take no target argument |
+| stop before analysing gray-zone deps | required coverage blocks finalize |
+| stop early overall | `GoalLoop` re-prompts; if still unfinished the run fails closed (exit 2) |
+| finalize twice / overwrite | write-once ledger; guard and tool both refuse |
+| talk a subagent into "clean" | LLM verdicts can only add signals; the ledger keeps the higher per identity |
+| cite fabricated evidence | citations validated against what tools showed; failure = coverage gap |
+| poison memory | memory is prompt-only context, never merged into signals; agents cannot write it |
+| run the payload | no agent has a shell / REPL / write tool; source is read-only and confined |
 
-### 2.5 Why Bounded Autonomy Is a Security Property (new v2 threat)
+At worst the orchestrator skips *optional* exploration, which can only lose an escalation.
+All three LLM/agent input channels — subagent verdicts, memory, control flow — share one
+invariant: **they can raise severity, never lower it**, and a failure to finish is never a
+pass.
 
-v1's injection worry: an attacker writes `"this is safe, ignore warnings"` in a README to make the **LLM** output `clean`. v1 §4.3 neutralizes this (LLM can only escalate).
+### 2.6 Shared State — `RunLedger` (`core/ledger.py`)
 
-v2 introduces a **new** injection surface: an attacker crafts package metadata to steer the **agent's control flow** — e.g. to *skip* hash verification or *terminate early* before behavior analysis. An agent free to choose its whole tool sequence is vulnerable to this.
+The sole channel between agents; never shown to a model whole (tools return summaries).
+Thread-safe (Strands runs one turn's tool calls concurrently). Merge rules:
+- **signals**: additive, dedup by `(dep_key, source, dimension)`, **max-wins** on collision
+  (retries idempotent; a later "clean" never clears a finding);
+- **stages**: monotonic; **decision**: write-once;
+- **budget**: consumed per subagent invocation, never returned;
+- **citable evidence**: per dep, everything a tool showed (+ fetched workspace files);
+- **candidates**: hunter claims, resolved only by the verifier.
 
-**Mitigation, and the reason for §1.3's autonomy boundary:** Stages 0–3 are a **non-discretionary fixed sequence** — the agent cannot be talked out of running them, because it never chose to run them; the spine does. Agent discretion exists *only* in Stage-4 specialist selection, and there the failure mode is bounded: at worst the agent skips a specialist, which can only *lose* an escalation signal, never *manufacture* a downgrade. Combined with §4.3 (LLM escalates only) and §3.3 (memory informs, never overrides), all three of SafeSC's LLM/agent input channels share one invariant: **they can raise severity but never lower it.**
+### 2.7 Harness (`agents/harness/`, Strands lessons 5–7)
 
-### 2.6 Shared State (blackboard) *(implemented: `graph/state.py`)*
-A single typed LangGraph state object (`AuditState`, Pydantic) threads through every node: `Dependency[]`, accumulated `Signal[]`, per-dep escalation map, live LLM-call count (for §5.3), and degraded notes. It is the **sole** inter-node channel — no direct agent-to-agent messaging, no side channels. Parallel specialists write via **Annotated channel reducers** so out-of-order fan-in merges deterministically:
-- `signals` → **additive + dedup** by `(dep_key, source, dimension)`, making auto-repair retries idempotent (no double-count).
-- `escalations` → **max-wins** per dep: conflicting tiers resolve to the higher one (weakest-link, escalate-only). *This resolves the former §9 open question.*
-- `llm_calls` → **sum of per-node deltas**; nodes return only the calls they made (`increment_llm_calls`), never an absolute total — a naive overwrite would drop a parallel branch's count and defeat the §5.3 cap.
-- `gate_decision` → **write-once**, `report_agent` only (§2.4).
-
-State is Pydantic per this doc; if a pinned LangGraph predates reliable Pydantic-state support, swap `AuditState` for a `TypedDict` with the same Annotated fields — reducers and value models are unchanged.
-
-### 2.7 Harness Layer
-
-Four cross-cutting wrappers sit between the graph nodes and the outside world. None of them make audit decisions — they enforce the invariants the rest of this doc assumes. All live under `graph/harness/`. **Wrapping order is fixed** — `auto_repair(outer) → constraint_validated(inner)` — so a semantic rejection can never masquerade as an infrastructure fault (see §2.7.2).
-
-#### 2.7.1 Constraint Validator (`constraint_validator.py`) *(implemented)*
-Wraps every LLM node. Two layers, because a prompt constraint is not an enforcement mechanism:
-- **Schema layer** — the §4.2 output is parsed into the `LLMOutput` Pydantic model; missing fields, out-of-range `confidence`, or an illegal `verdict` are rejected before anything reaches shared state.
-- **Semantic layer** — the checks the schema can't express: every `evidence` ref must resolve to a real entry in the run's evidence log (blocks hallucinated citations), and the resulting fused signal is compared against the dimension's current baseline — any attempt to *lower* it is rejected outright. This is §4.3's escalate-only rule enforced in code, not trusted to the model.
-
-Malformed output is retried with a repair prompt carrying the specific violation. This retry counter is **independent** of the auto-repair counter (§2.7.2). On exhaustion the node's contribution is marked `degraded` and a `coverage_gap` note is written, so the scorer *knows a dimension went unanalysed* rather than silently seeing no signal for it. *(Impl: the `coverage_gap` note reuses the `degraded_notes` channel with a `coverage_gap:` prefix; the scorer's existing "escalated dep with no LLM signal" check (§2.4) already treats it as incomplete. Evidence-ref resolution is path-based: a citation naming a file absent from the gathered bundle is rejected; a paraphrase with no path token is allowed. The escalate-only semantic check is defense-in-depth — under additive+max-wins (§2.6) a clean LLM verdict never lowers a dimension, so the check only fires if that reducer invariant is ever broken.)*
-
-#### 2.7.2 Auto-repair (`auto_repair.py`) *(implemented)*
-Wraps the deterministic spine tools, the `deep_analysis_tool.py` primitives, and the *outer* (infrastructure) boundary of LLM nodes. Handles **transient** faults only — timeouts, rate-limit responses, connection resets — with bounded retry + exponential backoff and jitter (v1 §6.2).
-
-The division of labour with §2.7.1 is the load-bearing detail: the inner constraint-validated wrapper, on exhaustion, **returns a `degraded` result rather than raising**. So auto-repair never sees a semantic failure and never retries one — otherwise the two layers' retry budgets multiply into a retry storm. On its *own* exhaustion, auto-repair marks the node `degraded` and the run continues (§8, graceful degradation).
-
-#### 2.7.3 Session Manager (`session_manager.py`) *(implemented)*
-- Assigns each run a **ULID** `run_id` — lexicographically sortable, so Redis and PGVector keys range-query and GC by time without a separate index.
-- Holds the §5.2 distributed semaphores as a Redis **ZSET token** pattern, not a raw INCR/DECR counter: acquire = `ZADD run_id→expiry_ts`; the live holder count is `ZCARD` taken *after* a `ZREMRANGEBYSCORE` sweep of expired tokens. This self-heals when a worker dies mid-run — a leaked slot ages out on its own instead of pinning the semaphore for every later run.
-- **Three** semaphore classes, two run-scoped and one global:
-  - `sem:llm_budget:{run_id}` — a *budget*, not a concurrency limit. Backstops the §5.3 `sum_deltas` counter: the reducer does the in-graph logic, the semaphore stops parallel branches racing past the ceiling before their deltas have merged back. Acquired via `consume()`, which **never releases** — releasing would let the next specialist reuse the same unit and the ceiling would never bind. The key TTL reclaims it.
-  - `sem:fanout_width:{run_id}` — a genuine concurrency limit, so one large repo can't open dozens of simultaneous LLM connections and trip a provider rate limit. Acquired via `slot()`, released in `finally`.
-  - `sem:host:{host}` — per external registry, and deliberately **not** run-scoped (§5.2). A registry's rate limit belongs to the registry, not to one audit, so concurrent audits across a fleet must share one budget per host or they will collectively trip it while each stays individually polite. Injected into the frozen scan layer as a `host_gate` seam; nothing under `tools/` imports Redis.
-- **Call sites, and which way each one fails.** The two run-scoped semaphores wrap every specialist node, outermost, as `fanout_limited_node → budgeted_node → auto_repaired_node → constraint_validated` — one width slot covers the whole node including auto-repair's retries, and §2.7's fixed inner ordering is untouched. Width is outside the budget check so a call that will be refused a budget unit does not occupy a width slot while waiting to find that out. Budget denial **fails closed** (skip the specialist, degrade the dimension, run marked incomplete): §2.5 already establishes a skipped specialist can only lose an escalation. Width saturation and per-host gate failure **fail open** (run anyway, warn, note it): those are politeness constraints, and skipping the call would lose a signal, which is strictly worse. A store-free session (tier 2, §3.6) leaves every node exactly as it was.
-- Release runs in a `finally`; a key TTL slightly longer than the worst-case run time is the backstop if release itself fails.
-
-#### 2.7.4 Memory Manager (`memory_manager.py`) *(implemented)*
-The stores in §3 *hold* memory; this component is the **only** code allowed to read or write them, so the §3.3 safety boundary is enforced in one place instead of being re-litigated inside three specialists.
-
-**Read path** — a decorator peer to `constraint_validated`, run before a specialist executes:
-- Pulls the exact-hash hot record from Redis and the top-*k* behaviourally-similar records from PGVector, packaged as an **immutable `MemoryContext` snapshot**.
-- That snapshot is injected into the specialist's prompt as *"prior findings"* only. It is **never** merged into `AuditState.signals`. If a specialist agrees with a retrieved finding it must re-derive it from *current* evidence and emit its own signal with its own `evidence` refs — **forced re-attestation**. This is the concrete mechanism behind §3.3: a poisoned `clean` record in PGVector still has to clear the §2.7.1 evidence check, which it cannot, so it can never buy a downgrade.
-
-**Write path** — a single call at the tail of `report_agent`, after the gate decision exists (never mid-run, never from a specialist — that would race under fan-out):
-- Upsert keyed by artifact identity (`package@version+hash`). On collision, severity resolves **max-wins** — the same reducer semantics as §2.6, lifted from "parallel branches within one run" to "the same immutable hash across historical runs". Because the hash is immutable, a verdict's severity should only ever *rise* across runs; a *decrease* is treated as an anomaly (bug or hash collision) and flagged, not silently written.
-- **Write scope is deliberately narrow**: persist (a) anything ever escalated, and (b) clean confirmations for high-popularity packages. Long-tail first-seen clean results are *not* cached — they add little retrieval value and widen the surface for an attacker to seed a "looks-clean" record.
-
-**Embedding and GC** are external dependencies — configured, not vendored. See §3.2 (embedding provider) and §3.4 (retention / CronJob).
-
----
-
-## 3. Memory System
-
-### 3.1 Short-Term Memory — Redis *(implemented: `memory/short_term.py`)*
-- LangGraph checkpointer backend: mid-run state survives node retries and enables resume. *(implemented: `memory/checkpoint.py`, v2.14)* Two backends, chosen by `bootstrap._select_checkpointer`: **Postgres first** (`PostgresSaver` on `SAFESC_PGVECTOR_DSN` — durable, TTL-free, and the database already exists at that tier), **plain Redis second** (`PlainRedisSaver`, returned by `ShortTermStore.checkpointer()`).
-  - **Why not `langgraph-checkpoint-redis`.** Its `RedisSaver` indexes checkpoints with RediSearch (`FT.*`), which Upstash and most managed Redis do not ship, so `--resume` silently never worked there. `PlainRedisSaver` mirrors `InMemorySaver`'s storage model using only hash / sorted-set / set / list commands, on its own binary-safe connection (the store's client decodes to `str`; serialized checkpoints are bytes). Every write refreshes `SAFESC_CHECKPOINT_TTL_S` (default 7d), so abandoned threads age out with no GC job.
-  - **The audit path never runs checkpoint DDL** (§3.6). `safesc store init` runs `PostgresSaver.setup()`; an audit only verifies `checkpoint_migrations` is current and, if not, falls back to Redis with a warning rather than failing on the first write mid-run.
-  - **Every checkpointer failure is a warning, never fatal** — not even under `SAFESC_MEMORY_STRICT`, which covers unreachable stores. A missing checkpointer disables `--resume` and changes nothing else about the audit.
-  - **Resume needs a stable thread id, and that is opt-in.** `--resume` derives the LangGraph `thread_id` from the *request* (`sha256(mode|target|ecosystem)`, `graph.build.thread_key`) so a re-invocation lands on the interrupted run's checkpoint. Without the flag the thread id is the run's fresh ULID — because the same stability that enables resume would otherwise make a routine second audit of the same repo replay a finished thread instead of re-running it. `run_id` stays the ULID either way, for keys and logs.
-- Hot cache for in-flight tool results (replaces v1 L1) and cross-run cheap-signal reuse, TTL 7 days (v1 L2) — `cache_get`/`cache_set` under a `cache:` namespace.
-  - **Cheap-signal reuse is keyed on the pinned artifact, not the repo**: `sig:{version}:{ecosystem}:{name}@{version}`, so the pool is shared across every project depending on the same release — which is where nearly all the saving is, since popular transitive dependencies recur everywhere. The leading version tag is bumped when a collector changes, invalidating the pool rather than re-hydrating stale-shaped entries.
-  - **Only three of the five dimensions may be reused** (`collector.CACHEABLE_DIMENSIONS`): identity, behavior and provenance observe things that are immutable for a pinned `name@version` — install hooks, publish timestamps, hashes, name similarity. **Vulnerability and popularity are always re-collected**, because they are the two that move underneath a frozen version: OSV advisories are filed continuously, so a cached "no known CVE" is precisely the stale answer that becomes a false clean, and repo-archived status changes the same way. Every cache failure — unreachable, corrupt, unparseable — falls through to a *full* collection; the cache may only ever save work, never shrink the signal set. **An incomplete collection is never written** (v2.13): a collector whose registry request went unanswered returns no signals exactly like one that found nothing wrong, so persisting that shape would turn a transient outage into a fleet-wide false clean for the whole TTL. `_safe_collect` now reports both degradation modes — a raised exception and an unanswered request — through an optional `on_error`, and `_cached_collect_signals` writes only when no *cacheable-dimension* collector degraded. The dep re-collects next run: that costs work, and cannot cost a signal.
-- Distributed semaphore store (§5.2).
-
-`ShortTermStore` is a thin, injectable wrapper: it exposes the JSON-friendly `get`/`set` the MemoryManager uses and passes the SessionManager's ZSET semaphore primitives (`zadd`/`zremrangebyscore`/`zcard`/`zrem`/`pexpire`) straight through to the wrapped client, so it is *the* single object injected as `redis=` to both consumers — no node imports a raw client (§6.1.6). `from_url` builds the real redis-py client lazily.
-
-Note: within a single graph run, parallel specialists synchronize via LangGraph fan-in (§2.6), **not** via Redis pub/sub. Redis holds state and rate limits; it is not a message bus between nodes.
-
-### 3.2 Long-Term Memory — PGVector *(implemented: `memory/long_term.py`)*
-- Stores embeddings of: finalized verdicts per `package@version+hash`, LLM evidence/reasoning text, allowlist entries, and known-attack fingerprints (e.g. XZ-Utils-style patterns). `PGVectorStore` exposes `query_similar`/`upsert`/`get`/`gc` plus an idempotent `ensure_schema()`; vectors are written as `::vector` literals over a plain DB-API connection (no adapter registration), and `upsert` carries a defense-in-depth `GREATEST(...)` max-wins so a cross-process race on the same immutable hash can't lower a stored severity (§2.7.4). The connection is injected (`connect` factory), so it unit-tests against a fake; `from_dsn` builds the real psycopg one lazily.
-- Used purely as **retrieval context**: before a Stage-4 specialist runs, PGVector is queried for prior or behaviorally-similar findings and those are supplied as few-shot context. This cuts redundant deep analysis (cost) and grounds the LLM in prior evidence.
-- Replaces v1's L3 (S3/Redis team cache). PGVector is now the canonical long-term store; Redis stays hot/short-term only.
-- **Known-attack fingerprints are a curated corpus, not a byproduct of runs** *(implemented: `memory/fingerprints.py`, `fingerprints/known_attacks.yaml`)*. Each entry describes the *behavioural shape* of a documented supply-chain attack (XZ-Utils build payload, event-stream maintainer handover, dependency confusion, conditional destructive protestware) as inert prose — the `text` field is what gets embedded, and it is matched against a dependency's static-signal summary, not its name. Two properties keep this safe and both are structural: records are keyed `fingerprint:{id}`, a namespace no `artifact_id` can collide with, and they enter the store **only** through `safesc fingerprint load`, an external finite job like `safesc gc` (§3.4) — `report_agent`'s write path emits only `escalated`/`benign`, so **no audit run can create one**. Because the corpus is version-controlled, "what SafeSC believes an attack looks like" changes through code review. `PGVectorStore` never demotes a stored `fingerprint` on a later upsert, and §3.4's GC retains them indefinitely.
-- **A retrieved fingerprint is labelled differently from a prior verdict.** `MemoryContext.as_prior_findings()` renders it as `[known-attack pattern <id>]` rather than `[similar <artifact_id>]`, because the two warrant different reasoning — one says "this exact artifact was judged before", the other says "this resembles a documented attack" — and a specialist that cannot tell them apart will cite the wrong thing. It remains prompt-only context under §3.3 either way.
-- **Embeddings are produced by an external provider API, not by SafeSC.** The LLM provider (Claude) has *no* first-party embeddings endpoint, so the embedding model is a **separate service with a separate, user-supplied key (BYOK, §3.5)**. Base URL and model stay configurable per deployment (`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` may set non-secret defaults), but the **key itself is caller-supplied and never server-stored**. For the Claude stack this defaults to **Voyage AI** (Anthropic's recommended partner); a base URL leaves it provider-swappable (OpenAI / Google / Cohere) with no code change. The wrapper lives in `memory/embedding_client.py` and is called *only* by the Memory Manager (§2.7.4). Vector **dimensionality follows from the chosen model and fixes the PGVector column width**, so it must be pinned per deployment.
-
-The default is **`voyage-4-large` at 1024-d**, and the family is chosen for a property that directly relaxes the old "changing model means a re-index" rule: the whole voyage-4 series (`voyage-4-large` / `voyage-4` / `voyage-4-lite` / `voyage-4-nano`) **shares one embedding space**, so vectors written by any of them are mutually comparable. Moving between tiers to trade retrieval accuracy against cost is therefore a config change, not a migration — which matters here because §9 still lists the accuracy/cost tier and the similarity cutoff as untuned, and this makes both cheap to tune against a *live* corpus instead of pinning them before the first deployment. **Two changes still force a re-index and neither is covered by the shared space:** changing `SAFESC_EMBEDDING_DIM`, which is interpolated into the DDL as `vector(N)` at `safesc store init` and so is a schema change whatever wrote the vectors; and leaving the family (voyage-3, OpenAI, Cohere), whose spaces are unrelated to voyage-4's even at an identical width. Pin the width once; move tiers freely at that width.
-
-### 3.3 Memory Safety Boundary (iron rule, extended)
-- Retrieved memory may **inform** LLM reasoning; it may **never** downgrade the current run's severity. A prior `clean` verdict on the same hash is evidence, not an override — because memory is another attacker-poisonable input channel, subject to the same "escalate-only" invariant as §2.5 and §4.3.
-- Long-term writes happen **only after** `ReportAgent` finalizes a run. No unverified in-flight signal is ever persisted.
-- **Both halves of this rule are enforced by the Memory Manager (§2.7.4)**, which is the sole reader and writer of Redis/PGVector. No specialist imports a store client; read access is only ever the injected read-only `MemoryContext`, and the single write point is the tail of `report_agent`. Centralising the stores behind one component is what makes "memory can only escalate" a checkable property rather than a convention scattered across nodes.
-
-### 3.4 Retention & Garbage Collection
-- **Redis** — TTL-based, already covered (§3.1); no separate job.
-- **PGVector** — differentiated retention: escalated records and known-attack fingerprints are kept indefinitely (their value as a fingerprint library *grows* with time); low-confidence clean records expire on a cycle to keep the index from growing without bound. This mirrors the narrow write scope of §2.7.4 — the store is a threat-intelligence asset, not an audit log.
-- **GC runs as a Kubernetes CronJob**, outside any audit run: a scheduled `safesc gc` invocation, never triggered by a graph node. Keeping it external preserves §1.3 (every audit run stays finite; maintenance is its own separate finite job) and makes GC cadence an ops concern, tunable without touching the harness. The entry point is a thin `gc` subcommand in `entrypoints/cli.py` that the CronJob calls.
-
-### 3.5 Credentials — Bring-Your-Own-Key (BYOK) *(implemented: `security/credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`)*
-
-Every hosted-model service SafeSC calls — the reasoning **LLM** (Claude, used by specialists) and the **embedding** provider (Voyage/compatible, used only by the Memory Manager) — is keyed by the **caller**, not by the SafeSC deployment. There is **no server-side or ambient key**; a missing key is a hard error (`MissingCredentialError`), never a silent fall-through to a shared account.
-
-Intake, one bundle two paths (`UserCredentials`):
-- **API path** (`query`/`audit` over HTTP) — keys arrive in the request; `UserCredentials.from_request(...)`.
-- **CLI / CI path** — keys come from the *caller's own* environment (`SAFESC_LLM_API_KEY`, optionally `SAFESC_EMBEDDING_API_KEY`, plus non-secret `_BASE_URL`/`_MODEL`); `UserCredentials.from_env(...)`. This is still BYOK: the key belongs to whoever runs SafeSC.
-
-The embedding key is optional and only required when the memory layer is enabled for the run.
-
-Security invariants (SafeSC is a security tool — these are load-bearing):
-1. Keys are `SecretStr`: absent from reprs, logs, tracebacks, and `model_dump()`/`model_dump_json()`.
-2. **Keys never enter `AuditState`**, which is checkpointed to Redis (§3.1) — that would persist a user secret. Credentials travel out of band via injected deps (`build_specialist_deps`) and LangGraph `configurable`, never through a state channel. This is *why* the specialist `LLMClient` was designed as an injected seam (§2.3) rather than a state field.
-3. Keys are never written to PGVector or any report artifact.
-4. The Anthropic/embedding client is constructed **per `UserCredentials`**, so concurrent runs never share a key or an account. A `base_url` on either credential routes through a proxy/gateway/Bedrock-compatible endpoint without code change.
-
-`EmbeddingCredentials.from_env()` exists as a second, narrower intake: the maintenance jobs (§3.4, `fingerprint load`) touch the stores but never reason, so requiring `SAFESC_LLM_API_KEY` for them would force an operator to hold a reasoning key just to run a CronJob.
-
-### 3.6 Deployment Tiers *(implemented: `entrypoints/bootstrap.py`)*
-
-The same console script serves a laptop and a fleet. `select_runtime()` picks a tier purely from the caller's environment; nothing downstream knows which one it got, because the stores are baked into the tool seams at construction time (exactly as `exclude` is, §2.1).
-
-| Tier | Trigger | What it adds |
-|---|---|---|
-| **2 — store-free** *(default)* | neither var set | The Stage 0–3 spine + Stage-4 specialists. No Redis, no Postgres, no checkpointer. One finite CI audit needs none of them. |
-| **3 — Redis** | `SAFESC_REDIS_URL` | Checkpointer (so `--resume` works), the §2.7.3/§5.2 semaphores, the cross-run cheap-signal cache, **and** exact-hash verdict recall. A `MemoryManager` is built as soon as *either* store exists: `read_context` skips similarity without a vector/embedder and `persist` skips the vector upsert, so the whole exact-hash path works on Redis alone — no embedding provider, no second key. |
-| **3 — + PGVector** | `SAFESC_PGVECTOR_DSN` + `SAFESC_EMBEDDING_API_KEY` | Adds the *similarity* half: behaviourally related prior findings and the known-attack fingerprint corpus (§3.2). Also takes over the checkpointer from Redis once `safesc store init` has created its tables (§3.1). The embedding key is required by the **vector store**, not by the memory layer as a whole — `require_embedding` follows `memory.vector`, so Redis-only is never asked for one. |
-
-Half-configured is a legitimate deployment — Redis alone is the common one, and deliberately the cheapest useful configuration: everything except similarity search, for one store and no extra key.
-
-**A configured-but-unreachable store degrades a tier with a warning rather than failing the run.** This follows directly from §3.3: everything the stores provide can only *escalate* a verdict, so running without them costs efficiency and grounding, never correctness. `SAFESC_MEMORY_STRICT=1` makes it a hard error instead, for deployments where a silently store-free audit is itself the incident. Other knobs: `SAFESC_EMBEDDING_DIM` (**must** match the model — it pins the column width, §3.2), `SAFESC_HOST_CONCURRENCY`, `SAFESC_HOT_TTL_S`.
-
-Schema creation is explicit (`safesc store init`), not implicit on first use: an audit run should need neither DDL privileges nor a schema check per invocation.
+- **`PipelineGuard`** (deterministic `SteeringHandler`): blocks with `Guide` + reason any
+  out-of-order / repeated stage, any subagent before Stage 3 or on an unknown dep, a
+  verifier without candidates, and a premature or second finalize. The tools enforce the
+  same rules themselves, so a misconfigured guard still cannot be bypassed.
+- **`GoalLoop`** on the orchestrator: validator = "a decision exists"; up to 3 attempts.
+- **Budget gate** (inside every subagent tool): one unit per invocation, taken before the
+  agent is built; denial **fails closed** (analysis lost, run incomplete).
+- **Validation + repair** (`validation.py`): schema by structured output; semantics here —
+  file citations must resolve, hunter files must exist, verifier must cover exactly the
+  pending candidates. Up to 2 repairs, independent of infrastructure retries; exhaustion
+  → `coverage_gap` note, no signal.
+- **`ReadOnlySourceGuard`** (hook): `read_source` (vended `file_editor`) may only `view`,
+  only inside a fetched workspace.
+- **`ProgressHook`**: one stderr line per tool call; all agents run with
+  `callback_handler=None`.
+- Every agent uses `context_manager="auto"` (offload large results, summarize, compress at
+  85%); `LLM_CONTEXT_WINDOW` makes the 85% real.
 
 ---
 
-## 4. LLM Usage Constraints (v1 iron rules, now enforced at graph level)
+## 3. Memory System (required) — `memory/`
 
-### 4.1 Role of the LLM
-Unchanged: **the LLM produces evidence, not decisions.** In v2 this is enforced by construction — no LLM node has write access to the gate decision (§2.4).
+- **Location**: `--memory-dir` / `SAFESC_MEMORY_DIR` / user cache dir. In CI the action
+  carries it between runs with `actions/cache`. Unwritable → `MemoryInitError`, exit 2.
+- **Stores** (Strands `MemoryStore`s, keyword search, no embeddings, no key):
+  - `VerdictStore` — one record per artifact identity `ecosystem:name@version[+hash]`,
+    **max-wins** (a lower write keeps the stored severity and is reported as an anomaly);
+  - `KnownAttackStore` — the curated corpus in `fingerprints/*.yaml` (version-controlled,
+    force-included in the wheel), loaded read-only at start. **No run can add one.**
+- **Read path**: `SafeSCMemory.manager()` builds a Strands `MemoryManager` with the
+  `recall_prior_findings` tool and prompt injection (subagents), **never an add tool**.
+  Injected text is labelled (`prior verdict` vs `known-attack pattern`) and banners that it
+  is context only.
+- **Write path**: `SafeSCMemory.persist(ledger)` once, after the decision exists. Narrow
+  scope: dependencies ≥ MEDIUM, plus clean confirmations whose popularity was checked and
+  found benign. Long-tail first-seen clean results are not kept.
 
-### 4.2 Mandatory Structured Output
-Every LLM node returns:
-```json
-{
-  "task": "<task_name>",
-  "verdict": "clean | suspicious | malicious",
-  "confidence": 0.0-1.0,
-  "evidence": [...],
-  "reasoning": "...",
-  "false_positive_hints": [...]
-}
-```
-Enforced via a LangChain structured-output parser bound to a Pydantic model; the constraint validator (§2.7) rejects non-conforming output.
+### 3.3 Memory Safety Boundary (iron rule)
+Retrieved memory may **inform**; it may **never downgrade**. It is never merged into
+signals; agreeing with it still requires citing current evidence (§2.7 validation).
+Writes happen only after scoring, by one owner (`memory/manager.py`; pinned by
+`tests/test_invariants.py`).
 
-### 4.3 LLM × Rules Engine Fusion
-Unchanged from v1:
+### 3.4 Retention
+Local files, no expiry yet. Deleting the memory directory is always safe (memory can only
+escalate). A size/age policy is an open item (§9).
+
+### 3.5 LLM Configuration (BYOK) — `config/llm.py`
+
+Required: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`; optional `LLM_BASE_URL`,
+`LLM_CONTEXT_WINDOW`. Providers: every Strands model that authenticates with an API key —
+`anthropic, openai, openai_responses, bedrock (API key), gemini, mistral, litellm,
+llamaapi (deprecated upstream), ollama, llamacpp, writer`. SageMaker is excluded (SigV4,
+no API key). Validation order, each with its own error class and exit 2:
+1. presence (`MissingLLMConfigError`) → 2. provider legal (`UnsupportedProviderError`) →
+3. model belongs to provider, per-provider rule with a cross-family hint
+(`ModelProviderMismatchError`) → 4. endpoint reachable (+ Ollama model pulled)
+(`ModelUnreachableError`) → 5. one minimal authenticated generation through the exact
+Strands client; failures classified as bad key (`InvalidAPIKeyError`) / unavailable model /
+unreachable host; throttling counts as accepted.
+
+Invariants: the key is a `SecretStr`, absent from reprs, scrubbed from every error, never
+in the ledger, memory, logs or reports. One model client per agent.
+
+---
+
+## 4. LLM Usage Constraints
+
+### 4.1 Role — the LLM produces evidence, not decisions (enforced by construction, §2.4).
+
+### 4.2 Mandatory Structured Output — Strands `structured_output_model`:
+`LLMOutput {task, verdict: clean|suspicious|malicious, confidence 0–1, evidence[],
+reasoning, false_positive_hints[]}`; `HuntReport {candidates ≤10, summary}`;
+`VerificationReport {results[candidate_id, status, severity, intentional_backdoor,
+confidence, evidence, advisory_ids, reasoning]}`.
+
+### 4.3 Fusion (unchanged table, one deterministic extension)
 
 | LLM verdict | confidence | Adjustment |
 |---|---|---|
-| malicious | ≥ 0.7 | Force critical |
-| malicious | 0.4–0.7 | Escalate one tier |
-| suspicious | ≥ 0.7 | Escalate one tier |
-| suspicious | < 0.7 | Evidence only |
-| clean | any | No adjustment |
+| malicious | ≥ 0.7 | CRITICAL |
+| malicious | 0.4–0.7 | HIGH |
+| suspicious | ≥ 0.7 | HIGH |
+| suspicious | < 0.7 | LOW (evidence only) |
+| clean | any | CLEAN (contributes nothing) |
 
-**Iron rule:** LLM signals and retrieved memory may only *escalate*, never downgrade.
+Extension: a **verified** vulnerability fuses as `suspicious` at the verifier's confidence,
+**capped by its assessed impact** (`ceiling`: low→LOW … critical→CRITICAL), so a confirmed
+low-impact flaw can never fail a gate; an intentional backdoor fuses as `malicious` on
+behavior. Hunter candidates contribute nothing until verified.
+**Iron rule:** LLM signals and memory may only escalate, never downgrade.
 
-### 4.4 LLM Task Scope
-Unchanged from v1 §4.4. Suitable: install-script intent, commit/diff consistency, README coercion, maintainer-handover signals, deobfuscation. Forbidden (kept deterministic): hash comparison, CVE matching, name-similarity, timestamp comparison. **This is exactly why §2.3 has specialists only for Identity/Behavior/Provenance** — the other two dimensions are entirely in the forbidden list.
+### 4.4 Task Scope
+LLM-suitable: install-script intent, deobfuscation, commit/diff consistency, README
+coercion, maintainer-handover / authorship judgement, vulnerability triage and
+verification. Forbidden to the LLM (deterministic tools only): hash comparison, CVE
+matching, name similarity, timestamp comparison, stylometric measurement, pattern scanning.
 
 ---
 
-## 5. Cost, Concurrency, and Caps
+## 5. Cost, Concurrency, Caps
 
-### 5.1 Time Budget
-Unchanged v1 §6.1 targets; CI run target remains under 5 minutes; Stage-4 trigger rate 5–10%.
-
-### 5.2 Concurrency
-Redis-backed distributed semaphores per external host (`sem:host:{host}`, §2.7.3), *layered on top of* — not replacing — v1's in-process `RateLimitedSession(per_host=…)`. The two answer different questions: the local `asyncio.Semaphore` bounds this process, the distributed token bounds the whole fleet, so concurrent audits and queries share one budget per registry. Local is acquired first, because it is free and taking it first caps how many coroutines can ever be queued against Redis.
-
-The gate is **injected** into the frozen Stage 0–3 scan layer and defaults to absent, so `tools/` stays store-free and only *timing* ever changes — §2.1's purity/idempotency rule holds. It **fails open** on a Redis error or a bounded-wait timeout: a rate limiter that gave up would return fewer signals, and fewer signals read as cleaner. Its sync Redis calls run via `asyncio.to_thread` so they never stall the collector event loop, and a short (30s) token TTL matching the request timeout means a killed worker frees its slot in seconds rather than pinning the host for the whole fleet.
-
-Exponential backoff with bounded retries; configurable API-token pools for rotation (v1 §6.2).
-
-### 5.3 LLM Call Cap
-Hard per-run ceiling tracked in shared state (§2.6). The counting mechanism is in place (`AuditState.llm_calls` via the `sum_deltas` reducer, plus `would_exceed_cap()`); nodes check before spending and report their delta after. Enforcement is **deterministic at the gate**: `plan_gate` (`graph/spine.py`) ranks fan-out candidates by trigger severity and emits only the first `llm_call_cap − llm_calls`, dropping the rest *before* any `Send`. Truncated deps keep their static escalation and get an "incomplete analysis" degraded note (v1 §6.3) — a routing decision, not a silent truncation, and not something parallel specialist branches can race past. Under fan-out the plan is computed before parallel deltas merge, so `sem:llm_budget:{run_id}` (§2.7.3) backstops it at the node. The concrete cap value is still TBD (§9).
+- **Subagent budget**: `--max-subagents` (default 40) invocations per run; fail-closed.
+- **Turn limits** (Strands `Limits`): subagent 16 per invocation (+6 per repair),
+  orchestrator 250; `GoalLoop` 3 attempts.
+- **Concurrency**: Strands runs one turn's tool calls in parallel (several subagents at
+  once); the ledger is thread-safe; registry calls keep v1's per-host `RateLimitedSession`.
+- **Bounded evidence**: tool outputs truncated (~12k chars), scans capped (files, findings
+  per rule), artifacts ≤ 60 MB, clones depth-limited.
 
 ---
 
 ## 6. Project Structure (Enforced)
 
-The v1 Stages 0–3 already live under `safesc/tools/` split into two frozen sub-packages — `index/` (discovery + normalize + ecosystem adapters) and `scan/` (signal collectors). Stage 4 adds a peer module, `deep_analysis_tool.py`. The agent layer is `safesc/graph/`. Everything ships under one top-level `safesc/` package so the internal subpackages never occupy generic global import names once installed. Legend: ✅ built · ◑ partial (seam built, backing store pending) · ⛔ pending.
-
 ```
 safesc/
-├── tools/                            # Stages 0–4, deterministic, LLM-free
-│   ├── index/                        # ✅ Stages 0–1
-│   │   ├── core/                     #    discovery.py, normalizer.py, models.py (→ Dependency)
-│   │   ├── cli/
-│   │   └── ecosystems/               #    base.py + go|java|javascript|python|rust adapters+parsers
-│   ├── scan/                         # ✅ Stages 2–3
-│   │   ├── cli/
-│   │   └── signals/                  #    base, collector, github, registry_meta, models
-│   │       └── behavior|identity|popularity|provenance|vulnerability/   # static collectors
-│   └── deep_analysis_tool.py         # ✅ Stage 4 (evidence only, no LLM, no verdict)
-│                                     #    clone/diff/extract primitives the specialists call
-├── graph/                            # agent layer (the scheduler)
-│   ├── state.py                      # ✅ AuditState + channel reducers (§2.6)
-│   ├── router.py                     # ✅ scope split only (§2.2-A)
-│   ├── single_pkg.py                 # ✅ single-package entry node → shared spine (§2.2-A)
-│   ├── spine.py                      # ✅ fixed Stage 0→3 sequence + post-Stage-3 gate (§2.2-B);
-│   │                                 #    load_default_tools bakes in exclude/cache/host_gate
-│   ├── specialists/                  # ✅ base.py + identity_agent.py, behavior_agent.py, provenance_agent.py
-│   │                                 #    (no popularity/vulnerability agent — §2.3)
-│   ├── llm_client.py                 # ✅ concrete BYOK Claude client (§3.5)
-│   ├── report_agent.py               # ✅ terminal reducer == scorer, sole decision writer (§2.4)
-│   ├── build.py                      # ✅ graph assembly + run() seam the CLI entrypoint calls (§6.1.4)
-│   └── harness/                      # ✅ constraint_validator.py, auto_repair.py,
-│                                     #    session_manager.py, memory_manager.py (§2.7)
-├── memory/                           # ✅ short_term.py (ShortTermStore/Redis, §3.1),
-│                                     #    long_term.py (PGVectorStore, §3.2/§3.4),
-│                                     #    embedding_client.py (BYOK seam, §3.2/§3.5),
-│                                     #    fingerprints.py (known-attack corpus, §3.2).
-│                                     #    All injected into MemoryManager; live store = infra (⛔)
-├── entrypoints/                      # ✅ cli.py (audit | query | gc | store init |
-│                                     #    fingerprint load) + bootstrap.py (tier selection, §3.6)
-│                                     #    (HTTP API is out of scope for this repo — see below)
-├── reporter/                         # ✅ SARIF / Markdown / JSON — build_report + 3 pure renderers (§6, §7)
-└── security/                         # ✅ credentials.py — BYOK credentials for LLM + embedding services (§3.5)
-
-fingerprints/                         # ✅ curated known-attack corpus (YAML, §3.2) —
-                                      #    version-controlled, loaded by `safesc fingerprint load`
+├── cli.py                     # `safesc` — args, LLM + memory checks, run, print, reports
+├── config/llm.py              # LLM_* validation + Strands model factory (§3.5)
+├── core/                      # deterministic, LLM-free
+│   ├── signals.py             # Severity, TrustDimension, Signal, LLMOutput, fusion
+│   ├── ledger.py              # RunLedger, RunOptions, roles, features, Decision
+│   ├── gate.py                # plan_triage (§2.2-B)
+│   ├── scoring.py             # the scorer (§2.4)
+│   └── targets.py             # default target, CI detection, package specs (§2.2-A)
+├── agents/
+│   ├── orchestrator.py        # run_audit: orchestrator Agent + guard + GoalLoop, fail-closed
+│   ├── context.py             # AgentContext (per-run seams)
+│   ├── harness/               # guard.py, validation.py, progress.py
+│   ├── specialists/           # base.py (runner) + six SPEC modules + models.py
+│   └── tools/                 # pipeline.py, inspection.py, evidence.py, external.py, scoring.py
+├── memory/                    # manager.py (sole owner), store.py, fingerprints.py
+├── reporter/                  # build_report(ledger, decision) + JSON / Markdown / SARIF
+└── tools/                     # LLM-free library: index/, scan/, deep_analysis_tool.py,
+                               #   source.py, vulnscan.py, authorship.py
+fingerprints/                  # curated known-attack corpus (YAML)
 ```
 
-Naming note: the `*_agent.py` specialists and `report_agent.py` are graph nodes, not autonomous agents in the swarm sense; `report_agent` runs no LLM at all (§2.4).
-
-### 6.1 Structural Invariants
-1. **Only `safesc/graph/report_agent.py` (or the single-agent reducer) writes the gate decision** — enforced today by the `write_once` reducer on `AuditState.gate_decision` (v2 form of v1 §5.1.4).
-2. **`safesc/tools/` stays LLM-free — including `safesc/tools/deep_analysis_tool.py`.** If a stage needs LLM judgment it belongs in `safesc/graph/specialists/`, never in `safesc/tools/`. `deep_analysis_tool.py` provides deterministic primitives (clone, diff, extract) and returns evidence bundles with **no verdict/score field**; the *reasoning* lives in the specialist node.
-3. **Adding an ecosystem still means one adapter under `safesc/tools/index/ecosystems/`**, untouched by the agent layer (v1 §5.1).
-4. **The graph is the core; `safesc/entrypoints/` are thin.** The CLI calls `safesc.graph.build.run(request)`; it contains no audit logic. (Any external HTTP API is a separate private repo that also calls the same `run()` seam — it is not part of this repo.)
-5. **v1 layering preserved:** `safesc/tools/scan/signals/` and `safesc/graph/specialists/` receive standardized `Dependency` objects and never import `safesc/tools/index/ecosystems/`; adapters never judge (v1 §5.1.1–.2).
-6. **Redis and PGVector have exactly one reader/writer: the Memory Manager (§2.7.4).** No node imports a store or embedding client directly; specialists see memory only as an injected read-only `MemoryContext`, and long-term persistence happens at exactly one point (tail of `report_agent`). This is the structural form of the §3.3 escalate-only-memory rule.
-7. **Stores are injected at construction, never imported by a node.** `select_runtime` (§3.6) is the only place that builds a `ShortTermStore`/`PGVectorStore`; from there the cache and host gate are baked into the tool seams and the MemoryManager/SessionManager receive the store by injection. This is what lets tier 2 exist at all — remove the stores and every seam still works unchanged — and it is why `tools/` remains importable with no Redis installed.
-8. **BYOK keys are injected, never state.** No credential ever appears in `AuditState`, a state channel, a log line, a degraded note, or a persisted artifact. The LLM key reaches specialists only through `build_specialist_deps` (injection); the embedding key reaches only the Memory Manager. This is what keeps user secrets out of the Redis checkpoint (§3.5).
-
----
-
-## 7. Tech Stack (v2)
-
-| Layer | Choice | Rationale |
-|---|---|---|
-| Orchestration | LangGraph | Explicit state machine; native fan-out/fan-in; checkpointing |
-| Tool/chain wrapping | LangChain | `@tool` wrapping of Stages 0–3; structured-output parsers |
-| Short-term memory | Redis | Checkpointer, distributed semaphores, hot cache (v1 L1/L2) |
-| Long-term memory | PGVector | Verdict/evidence/attack-fingerprint embeddings (v1 L3) |
-| Embeddings | Voyage AI `voyage-4-large` (configurable) | Separate provider, **BYOK key** (§3.5); Claude has no embeddings endpoint. Family shares one embedding space ⇒ tier is swappable without re-indexing (§3.2) |
-| LLM | Claude API | Structured output + prompt caching; **BYOK key** per caller (§3.5) |
-| Credentials | BYOK (`SecretStr`) | Caller-supplied per invocation; never in state/logs/PGVector (§3.5) |
-| Scheduled maintenance | Kubernetes CronJob | PGVector GC as an external finite job — `safesc gc` (§3.4) |
-| Attack fingerprints | Curated YAML corpus | Version-controlled, ingested by `safesc fingerprint load`; no audit run can write one (§3.2) |
-| Lockfile parsing | Syft → CycloneDX | Unchanged |
-| Path exclusion | `pathspec` | Gitignore-syntax `.safescignore` / `--exclude` matching (§2.1, v2.8) |
-| CVE source | OSV.dev | Unchanged |
-| Reports | SARIF + Markdown + JSON | Unchanged |
-| CI integration | GitHub Action + CLI | Exit code drives the gate (audit mode only) |
+### 6.1 Structural Invariants (pinned by `tests/test_invariants.py` unless noted)
+1. Only `finalize_score` (`agents/tools/scoring.py`) writes a decision.
+2. Static stage implementations are imported only by `agents/tools/pipeline.py`.
+3. `safesc/tools/` never imports Strands, agents or config — it stays LLM-free.
+4. No agent is given shell, bash, python-repl or notebook tools.
+5. Memory stores are imported only inside `safesc/memory/`; agents get no add tool
+   (`tests/test_memory.py`).
+6. One console script (`safesc`); no optional extras.
+7. Adding an ecosystem = one adapter under `tools/index/ecosystems/`, no agent changes.
+8. Keys are injected (`LLMConfig`), never in the ledger, memory, logs or reports.
 
 ---
 
-## 8. Development Principles (v2 Quick Reference)
+## 7. Tech Stack
 
-1. **Explainability > accuracy** — every escalation traces to a specific static or LLM signal in shared state.
-2. **Deterministic spine > agent cleverness** — the agent chooses *which specialist looks*, never *what the verdict is*.
-3. **Two branch points, kept separate** — scope at entry (§2.2-A), risk at the gate (§2.2-B). Never conflate them.
-4. **Escalate-only, three channels** — LLM signals, retrieved memory, and agent control-flow can each only raise severity, never lower it (§2.5, §3.3, §4.3).
-5. **Graceful degradation** — any node failure degrades that node's contribution and is annotated; it never crashes the run.
-6. **Zero-touch ecosystem additions** — one adapter, no core/graph changes.
-7. **The scorer is still the only judge** — the graph reschedules v1's signal→scorer flow; it does not replace it.
+| Layer | Choice |
+|---|---|
+| Agent runtime | Strands Agents ≥ 1.62 (Agent, tools, hooks, steering, GoalLoop, MemoryManager, context manager) |
+| Models | Any Strands API-key provider (§3.5), caller's key |
+| Vended / MCP tools | `web_fetch` (agentic), read-only `file_editor`; GitHub MCP (read-only allow-list), user MCP servers |
+| Memory | Strands `LocalFileStorage` + keyword search; curated YAML corpus |
+| Lockfile parsing | built-in adapters; `pathspec` for excludes |
+| CVE / malicious-package data | OSV.dev |
+| Reports | SARIF + Markdown + JSON |
+| CI | GitHub Action (composite) + CLI exit codes |
 
 ---
 
-## 9. Confirmed but Unimplemented
+## 8. Development Principles
 
-Resolved since v2.1:
-- [x] Entry-router scope heuristic — shipped rule-based and risk-independent (§2.2-A, `graph/router.py`).
-- [x] Channel-reducer semantics for conflicting escalations — **max-wins** confirmed and implemented (§2.6, `graph/state.py`).
+1. **Explainability > accuracy** — every escalation traces to a signal with evidence.
+2. **Deterministic core > agent cleverness** — agents choose what to look at, never the verdict.
+3. **Two branch points, kept separate** — target at start, risk after Stage 3.
+4. **Escalate-only, three channels** — subagents, memory, control flow (§2.5).
+5. **Fail closed on the verdict, degrade gracefully on evidence** — a broken tool is a
+   noted gap; an unfinished run is exit 2, never a pass.
+6. **Zero-touch ecosystem additions.**
+7. **Tests drive real Strands agents with scripted models** (`tests/helpers.py`), offline.
 
-Resolved at design level in v2.3 (specified, not yet coded):
-- [x] Harness Layer components — four wrappers specified (§2.7); the **Memory Manager** (§2.7.4) is the single read/write point enforcing §3.3.
-- [x] Embedding source — **external provider API, BYOK key** (§3.5) (Voyage AI for the Claude stack; base-URL/model configurable, §3.2). Dimensionality pins to the chosen model.
-- [x] Long-term store GC — **Kubernetes CronJob** invoking `safesc gc`, external to audit runs (§3.4).
+---
 
-Resolved in v2.4 (coded):
-- [x] Credentials model — **BYOK** for all hosted-model services (`security/credentials.py`, `graph/llm_client.py`, `memory/embedding_client.py`, §3.5); keys are `SecretStr`, injected, never in `AuditState`/logs/PGVector, no ambient fallback.
+## 9. Open Items
 
-Resolved in v2.5 (coded):
-- [x] Harness Layer — all four components implemented and unit-tested (§2.7): constraint validator (schema+semantic, independent repair loop), auto-repair (transient-only, no retry storm), session manager (ULID + self-healing ZSET semaphores), memory manager (§2.7.4).
-- [x] Memory read/write paths — implemented (`graph/harness/memory_manager.py`): immutable `MemoryContext` (prompt-only), single write at `report_agent` tail, max-wins + severity-decrease anomaly flagging, narrow write scope.
+- [ ] Gate threshold *values* (`gray_floor`, `decided_ceiling`) and the default subagent
+      budget, to be tuned against real trigger rates and cost.
+- [ ] Memory retention policy (size/age) for the local verdict store.
+- [ ] Real-LLM end-to-end run against `tests/fixtures/attacks/` behind
+      `@pytest.mark.integration` (scheduled, never the default PR path).
+- [ ] Adversarial control-flow tests with *model-generated* injection attempts (the
+      structural defences in §2.5 are tested with scripted models today).
+- [ ] Authorship from published artifacts when no git history exists (diff consecutive
+      releases' added code against prior releases).
+- [ ] A separate (cheaper/different-provider) model for the verifier and summarizer,
+      per lesson 2 — today every agent uses the one configured model.
+- [ ] Monorepo / multi-config support (carried from v1).
 
-Resolved in v2.6 (coded):
-- [x] Store *clients* — `memory/short_term.py` (`ShortTermStore`, Redis) and `memory/long_term.py` (`PGVectorStore`) implemented and unit-tested; injected into the MemoryManager/SessionManager, lazily importing the optional `memory` extra. `MemoryManager.gc()` delegates to the vector store, wiring `safesc gc` (§3.4) end-to-end.
-
-Resolved in v2.7 (coded, offline case only):
-- [x] End-to-end walkthrough vs. XZ Utils / event-stream / PyTorch dependency confusion (carried from v1) — resolved via synthetic, **inert** attack-pattern fixtures (`tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook,name_confusion,clean_baseline}/`, each with a README naming the real pattern it shadows) and `tests/test_attack_fixtures.py`. Stage 0-1 (discover/parse) and Stage 3 (as of v2.9, all four fixtures — see below) run the real, offline production code. From there the real `plan_gate`, a real specialist with a stubbed `SpecialistDeps.llm` (§4.2/§4.3 fusion), and the real `report_agent.score` all run unmodified. Verified to have teeth: manually confirmed both `GateConfig.gray_floor=HIGH` (suppresses the MEDIUM identity signal) and `decided_ceiling=HIGH` (suppresses the two HIGH behavior signals) empty `plan_gate`'s fan-out as expected (no production code touched, nothing to revert — see v2.9). The `clean_baseline` fixture proves the gate discriminates (no fan-out, `passed`, empty `degraded_notes`) rather than just alarming.
-
-Resolved in v2.8 (coded):
-- [x] Discovery path exclusion — landing the v2.7 fixtures broke SafeSC's own self-audit workflow (it correctly flagged its own test data: a real typosquat, `lodash@4.17.21`'s known OSV vulnerability). `discover()` now auto-loads a gitignore-syntax `.safescignore` from the scanned root, plus a layered `exclude` list from a new `--exclude` CLI flag / Action input, using `pathspec` for real gitignore semantics (§2.1). Fixed here via the repo's own `.safescignore` excluding `tests/fixtures/attacks/` — no workflow change needed, since `.safescignore` is auto-discovered.
-
-Resolved in v2.9 (coded):
-- [x] `Cargo.toml` false "0 dependencies" degraded note — `spine.py`'s `_MANIFEST_ONLY_LOCKFILES` now includes `cargo.toml` (alongside `pyproject.toml`/`setup.cfg`), so a normal Rust project no longer trips a spurious degraded note on every audit. Regression test: `test_graph_spine.py::test_index_node_does_not_flag_cargo_toml_alongside_cargo_lock`.
-- [x] Stage-3 Rust behavior coverage — `InstallScriptCollector` (§2.1) now supports `rust` via a real, verified-live crates.io signal (`lib_links` non-null implies a build script, per Cargo's own `links`-key rules; see the v2.9 banner above for the full mechanism). Coverage is real but **intentionally narrow**: a `build.rs` that never sets `links` (pure codegen) is still invisible to Stage 3 and only ever seen by Stage-4's `extract_install_scripts`, which needs a live clone. v2.10 investigated broadening this and deliberately **kept it narrow** — see the v2.10 entry below for the measurements. `tests/fixtures/attacks/{obfuscated_build,poisoned_install_hook}/` now run the real `InstallScriptCollector` (network mocked, `test_stage3_signals.py`'s established pattern) instead of the v2.7 hand-built stand-in signal.
-
-Resolved in v2.10 (coded — a split decision, one half deliberately not built):
-- [x] Stage-3 behavior coverage residual gap (was carried from v2.9) — **resolved as two separate decisions, because measurement showed the two halves point opposite ways.**
-  - **Python — implemented.** `InstallScriptCollector` now covers `python`: a resolved version publishing an sdist and **no wheel** must be built from source at install time, executing the project's PEP 517 backend (`setup.py`, or an in-tree `backend-path` backend); a published wheel is only unpacked and runs no project code. `PackageMetadata.requires_source_build` is derived from the `releases` payload `_pypi_package_metadata` already fetches — **zero extra HTTP requests**. Emitted at **MEDIUM** (not npm's HIGH) so it lands in the §2.2-B gray zone for BehaviorAgent intent verification but can never fail a CI gate on its own — a packaging choice is weak evidence of intent, the same reasoning behind `typosquat.py`'s MEDIUM cap. (v2.11 subsequently applied that same reasoning to the rust signal.) Precision measured before shipping: **0 of 45** real dependencies flagged, with true positives (`pycparser==2.14`, `python-Levenshtein==0.12.0`) correctly firing — verified live against PyPI.
-  - **Rust — closed as won't-do, on evidence.** Broadening beyond `links` was investigated and **rejected**: build scripts are the *norm* in Rust, not the exception. `serde`, `libc`, `anyhow` and `proc-macro2` all ship a `build.rs` (4 of 6 crates spot-checked, confirmed by unpacking the published `.crate` files) while declaring **neither** a `links` key nor `[build-dependencies]` — so they are invisible to *any* cheap metadata proxy, and the only complete detector is download-based. But completeness is not even desirable here: a "has a build.rs at all" signal would fire on roughly two-thirds of every Rust dependency tree, which is useless as an escalation trigger and would blow both the §5.1 5–10% Stage-4 trigger-rate target and the §5.3 LLM budget. `lib_links` is the correct signal *because* it is selective (2 of 12 sampled crates). `[build-dependencies]` (`kind: "build"`, available via the crates.io API and sparse index) was also evaluated as a middle option and rejected for the same reason — it catches `cc`/`bindgen` users like `ring` and `openssl-sys` that `links` largely already catches, while still missing every std-only build script. The residual exposure is accepted and covered downstream: Stage-4's `deep_analysis_tool.extract_install_scripts` reads real `build.rs` content for any crate that reaches it.
-
-Resolved in v2.11 (coded):
-- [x] Stage-3 behavior severity policy — made explicit and test-pinned rather than left implicit per-ecosystem. **Only opted-in code execution may reach `ScoreConfig.fail_threshold`**: npm's lifecycle hook stays HIGH; rust's `links` and python's sdist-only are routine build-system facts on ubiquitous legitimate packages and are MEDIUM (gray zone → BehaviorAgent). Corrects v2.9, which shipped rust at HIGH and would have newly failed CI for every consumer of `openssl-sys`/`ring`/`libz-sys` — irrecoverably, since §4.3 lets the LLM escalate but never downgrade. Guarded by `test_stage3_signals.py::test_only_optedin_code_execution_can_fail_a_gate`, so adding a future gate-failing ecosystem signal is now a deliberate, visible act.
-
-Resolved in v2.12 (coded):
-- [x] **Store wiring — the layer, not just the clients.** v2.6 shipped `ShortTermStore`/`PGVectorStore` and marked §3 done, but nothing constructed them: `checkpointer()`, `try_acquire`, `cache_get`/`cache_set` and `kind='fingerprint'` all had zero call sites. `entrypoints/bootstrap.py` now selects a **tier** from the environment (§3.6) and bakes the stores into the tool seams; a configured-but-unreachable store degrades a tier with a warning (or fails hard under `SAFESC_MEMORY_STRICT`), because §3.3 makes running store-free always safe.
-- [x] **Checkpointing that can actually resume.** `run()` passed `thread_id=run_id`, a fresh ULID per invocation, so no checkpoint was ever findable. `--resume` now derives a stable per-request thread key (`graph.build.thread_key`); the default stays a fresh ULID so a routine second audit re-runs rather than replaying a finished thread (§3.1).
-- [x] **Distributed rate limiting enforced.** The §2.7.3 semaphores now wrap every specialist node, with `consume()` (budget, never released) separated from `slot()` (concurrency, released in `finally`) — conflating them would have left the §5.3 ceiling permanently un-capped. A third class, fleet-wide `sem:host:{host}`, is injected into the frozen scan layer as a `host_gate` seam (§5.2). Failure directions are chosen per class: budget fails closed, width and host fail open.
-- [x] **Known-attack fingerprints.** `memory/fingerprints.py` + `fingerprints/known_attacks.yaml`: a curated, version-controlled corpus of four documented patterns, ingested only by the external `safesc fingerprint load` job, keyed in a namespace no artifact can collide with, never demoted by a later upsert, retained indefinitely by GC, and labelled distinctly on retrieval (§3.2). `tests/test_attack_fixtures.py` proves the seeded XZ-Utils fingerprint reaches a real specialist's prompt, offline.
-- [x] **Prior-analysis reuse that hits.** Two independent bugs. (a) The write path keyed on `artifact_id` (`...+hash`) while the read path passed the bare `dep_key`, so exact-hash recall missed its own record for every hashed dependency; `make_task_lookup` fixes the key and replaces the degenerate query text (the package name) with the dep's behavioural signal summary, which is what makes similarity — and fingerprint matching — meaningful at all. The task travels to the seam as an **optional keyword**, because a legacy one-argument `memory_lookup(dep_key)` would accept a task passed positionally and silently receive the wrong type, whereas an unexpected keyword raises `TypeError` and takes the fallback cleanly. (b) The §3.1 cheap-signal cache had no caller; it is now wired at the `collect_signals` seam, reusing only the three dimensions that are immutable for a pinned `name@version` and always re-collecting vulnerability/popularity (§3.1).
-
-Resolved in v2.13 (coded):
-- [x] **Signal-cache false clean.** Found by reading a live tier-3 audit log. `RateLimitedSession`
-  returns `None` both on a definitive 404 and on an exhausted retry (timeout / DNS / 5xx), so a
-  collector took its ordinary "no metadata" early return and emitted `[]` with **no exception
-  raised** — `collect_all`'s try/except safety net never fired. Before v2.12 that was ordinary §8
-  degradation confined to one run; once the §3.1 cache was wired it became persistent, because the
-  empty result was written under `sig:v1:{eco}:{name}@{version}` — keyed on the pinned artifact and
-  therefore shared by *every* project depending on that release, for the full 7-day TTL, with no
-  warning and no `degraded_note`. That inverts the §3.1/§8 rule that the cache may only ever save
-  work. Fixed at all three layers: the six exhausted-retry sites in `http.py` report via a
-  `ContextVar` (task-local, so attribution is exact per collector under `asyncio.gather`, and
-  definitive 404/410 returns are deliberately *not* reported); `_safe_collect` surfaces both
-  degradation modes through an optional `on_error` and now logs the failure it used to swallow
-  silently; `_cached_collect_signals` writes only a complete collection. Only the *cacheable*
-  dimensions gate the write — an OSV or popularity outage is irrelevant, since those two are
-  re-collected every run by design. Every new parameter is optional, so tier 2 and every existing
-  caller are byte-identical. Pinned by `test_memory_reuse.py` (degraded run writes nothing, and does
-  not poison a later healthy run) and `test_stage3_signals.py::TestDegradationIsReported` (including
-  one test against the *real* session, so the instrumentation cannot be removed unnoticed).
-- [x] **GitHub API rate limiting — found by the above, on its first run.** The new warning
-  immediately surfaced ten `ArchivedRepoCollector` degradations against `api.github.com` that
-  the previous run had shown as nothing at all. Cause was configuration, not code:
-  `signals/github.py` has read `GITHUB_TOKEN`/`GH_TOKEN` since v1, but `action.yml` never set
-  it, so every audit ran anonymous at 60 requests/hour *per runner IP*. Fixed with a
-  `github-token` input defaulting to `${{ github.token }}` (1000/hour). Worth doing rather
-  than tolerating: popularity is deliberately never cached (§3.1), so an anonymous audit lost
-  the archived-repo signal on *every* run, and it failed toward cleaner. Note the completeness
-  gate behaved exactly as specified here — popularity is not a cacheable dimension, so these
-  degradations correctly did **not** suppress any cache write.
-
-Still open:
-- [ ] Post-Stage-3 gate threshold *values* — the gate mechanism has shipped (`graph/spine.py`: `plan_gate` + `GateConfig` with `gray_floor`/`decided_ceiling`/`llm_dimensions`, §2.2-B); the concrete gray-zone floor is a default (`MEDIUM`) still to be tuned against the §5.1 5–10% trigger-rate target
-- [ ] Concrete hard cap *value* for LLM calls per run — mechanism and enforcement have shipped (`sum_deltas` + `would_exceed_cap`, enforced deterministically in `plan_gate`, §5.3); only the numeric ceiling is TBD
-- [ ] Live store deployment — a running Redis + Postgres/PGVector instance. The clients (§3.1, §3.2) and the wiring (§3.6, v2.12) have shipped, and `safesc store init` creates the pgvector schema and the Postgres checkpoint tables; what remains is provisioning plus Redis eviction policy (the plain-Redis checkpointer's keying and TTL are now SafeSC's own, §3.1), which is ops, not logic. A live-instance smoke test (`--resume` across a killed run; a second audit hitting the signal cache) is worth adding behind `@pytest.mark.integration`
-- [ ] Similarity threshold for "behaviourally similar", and the accuracy/cost *tier* within the embedding family — the *source* and default are settled (**`voyage-4-large` at 1024-d**, §3.2), and the voyage-4 shared embedding space makes the tier half of this **cheaply reversible**: tiers are interchangeable at a fixed width with no re-embed, so both can be tuned against a live corpus rather than guessed up front. What is *not* reversible is the width (`SAFESC_EMBEDDING_DIM`, a `vector(N)` schema change) and the family itself — those remain a re-index, so they are the decisions to get right before a first deployment
-- [ ] Auth model for the `query` route (new attack surface)
-- [ ] Agent-control-flow injection tests (§2.5) — adversarial metadata attempting to induce early termination
-- [ ] Prompt-injection defense for specialists (carried from v1)
-- [ ] Monorepo / multi-config-file support (carried from v1)
-- [ ] Real-LLM end-to-end run against the attack-pattern fixtures (`tests/fixtures/attacks/`) — the offline/stubbed-LLM walkthrough is resolved above (v2.7); a live-model pass is cost- and flake-sensitive, so it belongs behind `@pytest.mark.integration`, skipped by default and run only on a schedule or manual dispatch, never the default PR path.
+### History (condensed)
+v1: CI pipeline, Stages 0–5. v2.0–2.4: LangGraph spine + specialists, escalate-only fusion,
+BYOK. v2.5–2.6: harness + Redis/PGVector clients. v2.7–2.11: attack-pattern fixtures,
+`.safescignore`, rust/python behaviour signals with the "only opted-in code execution may
+fail a gate" policy (`test_only_optedin_code_execution_can_fail_a_gate`, still enforced).
+v2.12–2.14: store wiring, checkpointing, signal cache. **v3.0**: Strands refactor (this
+document) — the v2 stores, checkpointing, distributed semaphores and cross-run signal cache
+were removed with the multi-tier deployment model; local memory replaces them.
 
 ---
 

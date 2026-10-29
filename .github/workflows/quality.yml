@@ -37,8 +37,14 @@ jobs:
       - name: Compile project sources
         run: python -m compileall safesc
 
-      - name: Discover lockfiles in repository
-        run: python -m safesc.tools.index.core.discovery .
+      - name: CLI refuses to start without an LLM (exit 2, no traceback)
+        shell: bash
+        run: |
+          set +e
+          safesc > out.txt 2>&1
+          code=$?
+          cat out.txt
+          test "$code" = "2" && grep -q "LLM_PROVIDER, LLM_MODEL, LLM_API_KEY" out.txt
 
       - name: Build sdist and wheel
         run: python -m build

@@ -44,13 +44,14 @@ def _finding_details(f: DependencyFinding) -> list[str]:
 
 
 def render_markdown(report: AuditReport) -> str:
-    status = "PASS ✅" if report.passed else "FAIL ❌"
+    status = "PASS ✅" if report.passed else ("ERROR ⛔" if report.exit_code == 2 else "FAIL ❌")
     out: list[str] = [
-        f"# SafeSC report — {report.mode.upper()}",
+        f"# SafeSC report — `{report.target or 'n/a'}`",
         "",
-        f"**Result:** {status}  |  **Overall:** {_badge(report.overall_severity)}  |  "
-        f"**Exit:** {report.exit_code}",
-        f"**Run:** `{report.run_id or 'n/a'}`"
+        f"**Result:** {status}  |  **Trust score:** {report.trust_score}/100 ({report.grade})  |  "
+        f"**Overall:** {_badge(report.overall_severity)}  |  **Exit:** {report.exit_code}",
+        f"**Run:** `{report.run_id or 'n/a'}` ({report.mode})"
+        + (f"  |  **Model:** `{report.model}`" if report.model else "")
         + (f"  |  **Generated:** {report.generated_at}" if report.generated_at else ""),
         "",
         f"{report.total_dependencies} dependencies analysed, "
@@ -60,8 +61,8 @@ def render_markdown(report: AuditReport) -> str:
     if report.incomplete:
         out += [
             "",
-            "> ⚠️ **INCOMPLETE ANALYSIS** — this run degraded or hit a limit; treat the "
-            "result as provisional. See details below.",
+            "> ⚠️ **INCOMPLETE ANALYSIS** — treat the result as provisional: "
+            + ("; ".join(report.incomplete_reasons) or "see details below") + ".",
         ]
 
     flagged = report.flagged_findings
@@ -76,8 +77,21 @@ def render_markdown(report: AuditReport) -> str:
     else:
         out += ["", "No dependencies were flagged. ✅"]
 
+    if report.vulnerability_candidates:
+        out += ["", "## Unreported-vulnerability candidates", "",
+                "| Id | Dependency | Candidate | Location | Claimed | Verification |", "|---|---|---|---|---|---|"]
+        for c in report.vulnerability_candidates:
+            title = f"{c.title} ({c.cwe})" if c.cwe else c.title
+            out.append(f"| {c.id} | `{c.dep_key}` | {title} | `{c.location}` | {c.claimed_severity} | **{c.status}** |")
+
+    if report.subagent_runs:
+        out += ["", "<details><summary>Subagent analyses</summary>", ""]
+        for r in report.subagent_runs:
+            out.append(f"- `{r.role}` on `{r.dep_key}`: {r.status}" + (f" — {r.detail}" if r.detail else ""))
+        out += ["", "</details>"]
+
     if report.degraded:
-        out += ["", "## Degraded nodes", ""]
+        out += ["", "## Degraded steps", ""]
         for n in report.degraded:
             out.append(f"- `{n.node}`: {n.reason}")
 

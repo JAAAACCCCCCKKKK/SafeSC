@@ -1,47 +1,26 @@
 """reporter/build.py — assemble the canonical `AuditReport` from a finished run.
 
-The reporter reads the *final* graph state (dependencies + accumulated signals) and the
-already-written `GateDecision` (the scorer's verdict, §2.4). It re-derives NOTHING that
-would count as a decision: the per-dep severity here is the same weakest-link max the
-scorer computed, surfaced for display, never a second opinion.
-
-Accepts either an `AuditState` (Pydantic state) or the raw mapping LangGraph returns, so
-the caller need not know which form the checkpointer produced.
+Reads the run's ledger (dependencies, signals, candidates, subagent runs, notes) and the
+already-written `Decision`. It re-derives NOTHING that would count as a decision: the
+per-dep severity shown is the same weakest-link max the scorer computed, for display.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
 
-from safesc.graph.state import (
-    AuditState,
-    GateDecision,
-    Severity,
-    Signal,
-    dep_key,
-)
-
+from safesc.core.signals import Severity, Signal, dep_key
 from safesc.reporter.models import (
     AuditReport,
+    CandidateView,
     DegradedView,
     DependencyFinding,
     SignalView,
+    SubagentRunView,
 )
 
-
-def _get(state: Any, key: str, default):
-    """Read a field from an AuditState or from the raw dict LangGraph returns."""
-    if isinstance(state, dict):
-        return state.get(key, default)
-    return getattr(state, key, default)
-
-
-def _sev_name(sev: Severity | int | str) -> str:
-    if isinstance(sev, Severity):
-        return sev.name
-    if isinstance(sev, int):
-        return Severity(sev).name
-    return str(sev)
+if TYPE_CHECKING:
+    from safesc.core.ledger import Decision, RunLedger
 
 
 def _signal_view(sig: Signal) -> SignalView:
@@ -58,120 +37,76 @@ def _signal_view(sig: Signal) -> SignalView:
     )
 
 
-def _finding(dep, signals: list[Signal]) -> DependencyFinding:
-    key = dep_key(dep)
-    # per-dimension max + overall max (mirrors report_agent._dep_breakdown / score)
+def _rollup(signals: list[Signal]) -> tuple[Severity, dict[str, str]]:
     dim_max: dict[str, Severity] = {}
-    max_sev = Severity.CLEAN
     for s in signals:
-        d = s.dimension.value
-        if s.severity > dim_max.get(d, Severity.CLEAN):
-            dim_max[d] = s.severity
-        if s.severity > max_sev:
-            max_sev = s.severity
-    dims = {d: v.name for d, v in dim_max.items()}
+        if s.severity > dim_max.get(s.dimension.value, Severity.CLEAN):
+            dim_max[s.dimension.value] = s.severity
+    overall = max(dim_max.values(), default=Severity.CLEAN)
+    return overall, {d: v.name for d, v in dim_max.items()}
 
+
+def _finding(dep, signals: list[Signal]) -> DependencyFinding:
+    sev, dims = _rollup(signals)
     lockfile = getattr(dep, "lockfile_path", None)
     return DependencyFinding(
-        dep_key=key,
+        dep_key=dep_key(dep),
         name=getattr(dep, "name", ""),
         version=getattr(dep, "version", ""),
         ecosystem=getattr(dep, "ecosystem", ""),
         lockfile_path=str(lockfile) if lockfile is not None else None,
         source_url=getattr(dep, "source_url", None),
-        severity=max_sev.name,
+        direct=bool(getattr(dep, "is_direct", False) or getattr(dep, "layer_number", None) == 1),
+        severity=sev.name,
         dimensions=dims,
-        signals=[_signal_view(s) for s in signals],
+        signals=[_signal_view(s) for s in sorted(signals, key=lambda s: (-int(s.severity), s.source))],
     )
 
 
 def build_report(
-    state: AuditState | dict,
+    ledger: "RunLedger",
+    decision: "Decision",
     *,
-    run_id: str = "",
+    model: str = "",
     generated_at: Optional[str] = None,
 ) -> AuditReport:
-    """Project a finished run into the canonical `AuditReport`.
-
-    `state` is the final `AuditState` (or the raw dict LangGraph returns). `generated_at`
-    is injectable so callers that need byte-reproducible output (golden tests, cached
-    artifacts) can pin it; left `None` it is simply omitted rather than being a hidden
-    wall-clock dependency."""
-    # LangGraph may hand back either an AuditState or a mapping; when it is a mapping the
-    # values could be plain dicts (a fully-dumped checkpoint), so coerce to real models.
-    if isinstance(state, dict):
-        try:
-            state = AuditState.model_validate(state)
-        except Exception:
-            pass  # partial/hand-built dict — fall back to best-effort attribute reads
-    deps = list(_get(state, "dependencies", []) or [])
-    all_signals: list[Signal] = list(_get(state, "signals", []) or [])
-    degraded = list(_get(state, "degraded_notes", []) or [])
-    gate: Optional[GateDecision] = _get(state, "gate_decision", None)
-    mode = _get(state, "mode", None)
-    mode_str = getattr(mode, "value", None) or (str(mode) if mode is not None else "audit")
-
+    """Project a finished run into the canonical `AuditReport`. `generated_at` is
+    injectable so golden tests can pin it; left None it is omitted."""
     by_key: dict[str, list[Signal]] = {}
-    for s in all_signals:
+    for s in ledger.signals:
         by_key.setdefault(s.dep_key, []).append(s)
-
-    findings: list[DependencyFinding] = [_finding(dep, by_key.get(dep_key(dep), [])) for dep in deps]
-
-    # Signals may reference a dep_key with no matching Dependency (e.g. single-package
-    # query where the spine did not populate `dependencies`); surface them too.
-    seen = {dep_key(d) for d in deps}
-    for key, sigs in by_key.items():
-        if key not in seen:
-            findings.append(_synthetic_finding(key, sigs))
-
+    deps = ledger.dependencies
+    findings = [_finding(d, by_key.get(dep_key(d), [])) for d in deps]
     findings.sort(key=lambda f: (-Severity[f.severity].value, f.dep_key))
-    flagged = [f for f in findings if f.is_flagged]
-
-    if gate is not None:
-        overall = _sev_name(gate.overall)
-        passed = gate.passed
-        exit_code = gate.exit_code
-        summary = gate.summary
-    else:  # defensive: run never reached the scorer
-        overall = max((Severity[f.severity] for f in findings), default=Severity.CLEAN).name
-        passed = overall == Severity.CLEAN.name
-        exit_code = 0 if passed else 1
-        summary = "no gate decision produced"
 
     return AuditReport(
-        run_id=run_id,
-        mode=mode_str,
+        run_id=ledger.run_id,
+        target=ledger.options.target,
+        mode="ci" if ledger.options.ci else "interactive",
+        model=model,
         generated_at=generated_at,
-        overall_severity=overall,
-        passed=passed,
-        exit_code=exit_code,
-        incomplete="INCOMPLETE" in (summary or ""),
+        overall_severity=decision.overall.name,
+        passed=decision.passed,
+        exit_code=decision.exit_code,
+        trust_score=decision.score,
+        grade=decision.grade,
+        incomplete=decision.incomplete,
+        incomplete_reasons=list(decision.incomplete_reasons),
         total_dependencies=len(deps),
-        flagged_count=len(flagged),
-        summary=summary,
+        flagged_count=sum(1 for f in findings if f.is_flagged),
+        summary=decision.summary,
         findings=findings,
-        degraded=[DegradedView(node=getattr(n, "node", ""), reason=getattr(n, "reason", "")) for n in degraded],
-    )
-
-
-def _synthetic_finding(key: str, signals: list[Signal]) -> DependencyFinding:
-    """A finding for a dep_key present only in signals (no Dependency object)."""
-    ecosystem, _, rest = key.partition(":")
-    name, _, version = rest.partition("@")
-    dim_max: dict[str, Severity] = {}
-    max_sev = Severity.CLEAN
-    for s in signals:
-        d = s.dimension.value
-        if s.severity > dim_max.get(d, Severity.CLEAN):
-            dim_max[d] = s.severity
-        if s.severity > max_sev:
-            max_sev = s.severity
-    return DependencyFinding(
-        dep_key=key,
-        name=name,
-        version=version,
-        ecosystem=ecosystem,
-        severity=max_sev.name,
-        dimensions={d: v.name for d, v in dim_max.items()},
-        signals=[_signal_view(s) for s in signals],
+        vulnerability_candidates=[
+            CandidateView(
+                id=c.id, dep_key=c.dep_key, title=c.title, cwe=c.cwe,
+                location=f"{c.file}:{c.line}" if c.line else c.file,
+                claimed_severity=c.claimed_severity, status=c.status, verifier_note=c.verifier_note,
+            )
+            for c in sorted(ledger.candidates.values(), key=lambda c: c.id)
+        ],
+        subagent_runs=[
+            SubagentRunView(dep_key=r.dep_key, role=r.role.value, status=r.status, detail=r.detail)
+            for r in ledger.subagent_runs
+        ],
+        degraded=[DegradedView(node=n.node, reason=n.reason) for n in ledger.notes],
     )

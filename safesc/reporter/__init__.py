@@ -1,14 +1,14 @@
 """reporter/ — the final sink: turn a finished run into JSON / Markdown / SARIF.
 
-The reporter is intentionally *outside* the graph (§6): it makes no decisions and holds no
-secrets — it only projects the scorer's already-written `GateDecision` plus the run's
-signals into artifacts. One canonical `AuditReport` (built by `build_report`) feeds three
+The reporter is intentionally *outside* the agent layer (§6): it makes no decisions and
+holds no secrets — it only projects the scorer's already-written `Decision` plus the run's
+ledger into artifacts. One canonical `AuditReport` (built by `build_report`) feeds three
 pure renderers, so the formats can never disagree.
 
-Typical use from an entrypoint (§6.1.4):
+Typical use from the CLI (§6.1.4):
 
     from safesc.reporter import build_report, render, write_reports
-    report = build_report(final_state, run_id=run_id)
+    report = build_report(outcome.ledger, outcome.decision)
     print(render(report, "markdown"))
     write_reports(report, out_dir, formats=["json", "sarif"])
 """

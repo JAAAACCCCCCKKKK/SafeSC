@@ -759,10 +759,10 @@ class TestInstallScriptCollector:
         # execution and may reach the HIGH fail_threshold. `links` / sdist-only are
         # routine build-system facts on ubiquitous legitimate packages, so they must
         # stay strictly below the gate and be resolved by the BehaviorAgent instead.
-        from safesc.graph.report_agent import ScoreConfig
+        from safesc.core.ledger import RunOptions
         from safesc.tools.scan.signals.behavior.install_script import _SEVERITY
 
-        gate = ScoreConfig().fail_threshold.name  # "HIGH"
+        gate = RunOptions(target=".").fail_on.name  # "HIGH"
         gating = {eco for eco, sev in _SEVERITY.items() if sev.name == gate}
         assert gating == {"javascript"}, (
             f"{gating - {'javascript'}} would newly fail CI gates on packages that "

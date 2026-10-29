@@ -1,33 +1,10 @@
-﻿"""memory — the section 3 stores and the BYOK embedding seam.
+"""memory — SafeSC's required, local, read-only-to-agents memory (CLAUDE.md §3).
 
-Only the MemoryManager (2.7.4) reads or writes these; no graph node imports them directly
-(6.1.6). Store clients are lazily constructed so the core package stays importable without
-the optional `memory` extra (redis / psycopg / pgvector / langgraph-checkpoint-postgres).
-`memory.checkpoint` is deliberately not re-exported here: its Redis saver
-(`memory.redis_checkpoint`) imports LangGraph, which the core package must not require.
+`SafeSCMemory` is the single owner: it opens the verdict store and the curated
+known-attack corpus, hands agents a Strands `MemoryManager` (recall + injection, never an
+add tool), and performs the one post-decision write.
 """
 
-from __future__ import annotations
+from safesc.memory.manager import MemoryInitError, SafeSCMemory, artifact_id, default_memory_dir
 
-from safesc.memory.embedding_client import Embedder, make_embedding_client
-from safesc.memory.fingerprints import (
-    FingerprintRecord,
-    default_corpus_path,
-    ingest as ingest_fingerprints,
-    load_corpus,
-)
-from safesc.memory.long_term import PGVectorConfig, PGVectorStore
-from safesc.memory.short_term import RedisConfig, ShortTermStore
-
-__all__ = [
-    "Embedder",
-    "make_embedding_client",
-    "FingerprintRecord",
-    "default_corpus_path",
-    "ingest_fingerprints",
-    "load_corpus",
-    "PGVectorConfig",
-    "PGVectorStore",
-    "RedisConfig",
-    "ShortTermStore",
-]
+__all__ = ["MemoryInitError", "SafeSCMemory", "artifact_id", "default_memory_dir"]

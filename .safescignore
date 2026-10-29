@@ -1,6 +1,6 @@
 # SafeSC's own self-audit exclude list (gitignore syntax; see safesc/tools/index/core/
 # discovery.py and README.md "Excluding paths"). Auto-discovered by every SafeSC
-# entrypoint (index, scan, safesc audit/query) when the scanned root is this repo.
+# run (`safesc` discovers through this one chokepoint) when the scanned root is this repo.
 #
 # tests/fixtures/attacks/ contains synthetic, INERT attack-pattern fixtures for
 # tests/test_attack_fixtures.py (CLAUDE.md §9) — a typosquat, a package with a known
