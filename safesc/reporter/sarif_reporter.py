@@ -108,6 +108,8 @@ def build_sarif(report: AuditReport) -> dict:
             "mode": report.mode,
             "overall_severity": report.overall_severity,
             "passed": report.passed,
+            "trust_score": report.trust_score,
+            "grade": report.grade,
             "incomplete": report.incomplete,
         },
     }

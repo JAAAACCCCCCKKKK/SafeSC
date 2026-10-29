@@ -6,10 +6,10 @@
 # of the incident.
 #
 # These are inert prose descriptions. No entry contains executable content, and nothing
-# here is a detection rule — a retrieved fingerprint reaches a Stage-4 specialist as
+# here is a detection rule — a retrieved fingerprint reaches a Stage-4 subagent as
 # prompt-only prior context that can raise concern but never lower a verdict (§3.3, §4.3).
 #
-# Load with:  safesc fingerprint load fingerprints/
+# Loaded read-only by every run (safesc/memory/fingerprints.py); changes go through review.
 
 fingerprints:
   - id: xz-utils-build-payload

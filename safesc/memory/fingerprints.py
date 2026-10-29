@@ -1,51 +1,38 @@
-"""memory/fingerprints.py — the known-attack fingerprint corpus (CLAUDE.md §3.2, §3.4).
+"""memory/fingerprints.py — the curated known-attack corpus, as a read-only memory store (§3.2).
 
-A fingerprint is a *curated* description of a real supply-chain attack pattern, embedded
-into the same PGVector table as finalized verdicts so that `query_similar` can surface it
-when a dependency under analysis behaves like a known attack. It is retrieval context and
-nothing more: like every other memory record it reaches a specialist only as prompt-only
-prior findings (§3.3) and can only ever escalate (§4.3).
+A fingerprint describes the *behavioural shape* of a documented supply-chain attack
+(XZ-Utils build payload, event-stream handover, dependency confusion, protestware) as inert
+prose. It reaches a subagent exactly like a prior verdict — as prompt-only context through
+the Strands `MemoryManager` (injection + recall tool) — and can only ever raise concern.
 
-Two properties make this safe, and both are structural rather than conventional:
+Two properties keep it safe, both structural:
 
-  * **No audit run can write one.** Fingerprints enter the store exclusively through
-    `safesc fingerprint load`, an external finite job with the same shape as `safesc gc`
-    (§3.4). `report_agent`'s write path (§2.7.4) only ever emits `escalated`/`benign`.
-  * **They are version-controlled.** The corpus lives in `fingerprints/*.yaml` and changes
-    through code review, so "what SafeSC believes an attack looks like" is auditable.
-
-Records are keyed `fingerprint:{id}`, a namespace no artifact identity can collide with
-(`artifact_id` is always `ecosystem:name@version[+hash]`), and carry `kind='fingerprint'`,
-which `PGVectorStore.gc` retains indefinitely — the corpus is a threat-intelligence asset
-whose value grows with time, not an audit log.
+* **No run can write one.** `KnownAttackStore` is loaded from the version-controlled YAML
+  shipped with SafeSC into an in-process index at startup and is not writable; there is no
+  code path from an agent or a finished audit into it. "What SafeSC believes an attack
+  looks like" changes only through code review.
+* **It is labelled as what it is.** Entries render as ``[known-attack pattern <id>]`` so a
+  subagent never confuses "this resembles a documented attack" with "this exact artifact
+  was judged before".
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("safesc.memory.fingerprints")
 
-# Namespace prefix for the store key. Kept distinct from every `artifact_id` form so a
-# fingerprint and a real verdict can never overwrite one another.
-KEY_PREFIX = "fingerprint:"
-
-RECORD_KIND = "fingerprint"
+STORE_NAME = "known_attacks"
 
 
 class FingerprintRecord(BaseModel):
-    """One curated attack pattern.
-
-    `text` is the field that gets embedded — write it as a behavioural description of what
-    the attack *does*, not as prose about the incident, because it is matched against a
-    dependency's static-signal summary (see `MemoryManager.make_task_lookup`). `severity`
-    is the graph `Severity` int; it exists so a retrieved fingerprint carries the weight of
-    the pattern it describes, and it is never applied to a verdict directly.
-    """
+    """One curated attack pattern. `text` is what retrieval matches against — written as
+    what the attack *does*, in the same register a dependency's signal summary uses."""
 
     id: str
     summary: str
@@ -53,31 +40,14 @@ class FingerprintRecord(BaseModel):
     severity: int = 4  # Severity.CRITICAL — these describe confirmed attacks
     references: list[str] = Field(default_factory=list)
 
-    @property
-    def key(self) -> str:
-        return f"{KEY_PREFIX}{self.id}"
-
-    def as_store_record(self) -> dict:
-        """Shape expected by `PGVectorStore.upsert` / `MemoryManager` readers."""
-        return {
-            "artifact_id": self.key,
-            "severity": int(self.severity),
-            "kind": RECORD_KIND,
-            "summary": self.summary[:280],
-            "reasoning": self.text[:1000],
-            "evidence": list(self.references),
-        }
+    def render(self) -> str:
+        refs = f"\nreferences: {', '.join(self.references)}" if self.references else ""
+        return f"[known-attack pattern {self.id}] {self.summary}\n{self.text}{refs}"
 
 
 def default_corpus_path() -> Path:
-    """Where the shipped corpus lives.
-
-    Two locations, because the file has to serve two readers: it is version-controlled at
-    the repo root (so changes to "what SafeSC believes an attack looks like" go through
-    code review) and force-included into the wheel at `safesc/memory/corpus/` (so an
-    installed copy can run `safesc fingerprint load` with no checkout). The installed copy
-    wins when both exist.
-    """
+    """The shipped corpus: force-included into the wheel at `safesc/memory/corpus/`, and
+    version-controlled at the repo root `fingerprints/`. The installed copy wins."""
     installed = Path(__file__).resolve().parent / "corpus"
     if installed.is_dir():
         return installed
@@ -88,19 +58,13 @@ def load_corpus(path: str | Path | None = None) -> list[FingerprintRecord]:
     """Read one YAML file, or every `*.yaml`/`*.yml` in a directory.
 
     The file is a list of mappings, or a mapping with a top-level `fingerprints:` key.
-    Duplicate ids across files are an error rather than a last-write-wins merge — a silent
-    overwrite would let one file quietly redefine another's pattern.
-
-    With no path, the shipped corpus is used (`default_corpus_path`).
+    Duplicate ids are an error rather than last-write-wins — a silent overwrite would let
+    one file quietly redefine another's pattern.
     """
-    import yaml  # core dependency (pyyaml), already required for pnpm-lock parsing
+    import yaml
 
     target = Path(path) if path is not None else default_corpus_path()
-    files: list[Path]
-    if target.is_dir():
-        files = sorted(p for p in target.iterdir() if p.suffix in (".yaml", ".yml"))
-    else:
-        files = [target]
+    files = sorted(p for p in target.iterdir() if p.suffix in (".yaml", ".yml")) if target.is_dir() else [target]
     if not files:
         raise FileNotFoundError(f"no fingerprint YAML found at {target}")
 
@@ -112,59 +76,54 @@ def load_corpus(path: str | Path | None = None) -> list[FingerprintRecord]:
         for entry in entries:
             rec = FingerprintRecord.model_validate(entry)
             if rec.id in seen:
-                raise ValueError(
-                    f"duplicate fingerprint id '{rec.id}' in {f} (already defined in {seen[rec.id]})"
-                )
+                raise ValueError(f"duplicate fingerprint id '{rec.id}' in {f} (already defined in {seen[rec.id]})")
             seen[rec.id] = f
             records.append(rec)
     return records
 
 
-def ingest(
-    records: Sequence[FingerprintRecord],
-    *,
-    vector,
-    embedder,
-    batch_size: int = 32,
-) -> dict:
-    """Embed and upsert the corpus into the long-term store.
+class KnownAttackStore:
+    """Strands `MemoryStore` over the curated corpus. Read-only by construction."""
 
-    Best-effort per batch: an embedding-provider failure on one batch is logged and skipped
-    so a partial corpus still lands, matching the graceful-degradation rule (§8). Returns a
-    report the CLI prints. This is the ONLY writer of `kind='fingerprint'` records.
-    """
-    written: list[str] = []
-    failed: list[str] = []
-    for batch in _batched(records, batch_size):
-        texts = [r.text for r in batch]
-        try:
-            vectors = embedder(texts)
-        except Exception as exc:
-            logger.warning("embedding failed for %d fingerprint(s): %s", len(batch), exc)
-            failed.extend(r.id for r in batch)
-            continue
-        for rec, vec in zip(batch, vectors):
-            try:
-                vector.upsert(rec.key, vec, rec.as_store_record())
-                written.append(rec.id)
-            except Exception as exc:
-                logger.warning("upsert failed for fingerprint %s: %s", rec.id, exc)
-                failed.append(rec.id)
-    return {"written": written, "failed": failed, "total": len(records)}
+    name = STORE_NAME
+    description = "Curated descriptions of documented supply-chain attacks (read-only reference patterns)."
+    writable = False
+    extraction = None
 
+    def __init__(self, records: list[FingerprintRecord], max_search_results: int = 2):
+        from strands.storage import InMemoryStorage
 
-def is_fingerprint(record: Optional[dict]) -> bool:
-    """True when a retrieved store record is a curated attack pattern rather than a prior
-    verdict. Used to label it distinctly in a specialist's prompt."""
-    return bool(record) and record.get("kind") == RECORD_KIND
+        self.max_search_results = max_search_results
+        self._records = {r.id: r for r in records}
+        self._storage = InMemoryStorage()
+        self._loaded = False
 
+    async def initialize(self) -> None:
+        if self._loaded:
+            return
+        for rec in self._records.values():
+            await self._storage.write(f"{rec.id}.md", rec.render().encode("utf-8"))
+        self._loaded = True
 
-def fingerprint_id(record: dict) -> str:
-    """The corpus id from a retrieved record's namespaced key."""
-    aid = str(record.get("artifact_id", ""))
-    return aid[len(KEY_PREFIX):] if aid.startswith(KEY_PREFIX) else aid
+    async def search(self, query: str, options: Any = None) -> list:
+        from strands.memory import MemoryEntry
 
+        await self.initialize()
+        limit = (options or {}).get("max_search_results") or self.max_search_results
+        out = []
+        for hit in await self._storage.search(query):
+            if len(out) >= limit or hit.score <= 0:
+                break
+            rec = self._records.get(hit.key.removesuffix(".md"))
+            if rec is not None:
+                out.append(MemoryEntry(
+                    content=rec.render(), store_name=self.name,
+                    metadata={"kind": "fingerprint", "id": rec.id, "score": hit.score},
+                ))
+        return out
 
-def _batched(items: Sequence[FingerprintRecord], n: int) -> Iterable[Sequence[FingerprintRecord]]:
-    for i in range(0, len(items), n):
-        yield items[i : i + n]
+    def get_tools(self) -> list:
+        return []
+
+    def search_sync(self, query: str, limit: int = 3) -> list:
+        return asyncio.run(self.search(query, {"max_search_results": limit}))

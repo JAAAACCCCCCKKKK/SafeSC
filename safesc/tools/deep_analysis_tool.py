@@ -17,20 +17,6 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-# --- soft LangChain import ----------------------------------------------------
-# The pure primitives are usable and testable without LangChain installed; the
-# `@tool` wrappers at the bottom degrade to plain functions if it is absent.
-try:
-    from langchain_core.tools import tool  # type: ignore
-except Exception:  # pragma: no cover - fallback for early-build environments
-
-    def tool(fn=None, **_kwargs):  # type: ignore
-        def _decorate(f):
-            return f
-
-        return _decorate(fn) if callable(fn) else _decorate
-
-
 logger = logging.getLogger("safesc.deep")
 
 # =============================================================================
@@ -649,7 +635,7 @@ def _safe_extract_archive(archive: Path, dest: Path) -> bool:
                     if not _within(dest, target) or member.issym() or member.islnk():
                         logger.warning("tar-slip/link blocked: %s", member.name)
                         return False
-                tf.extractall(dest)
+                tf.extractall(dest, filter="data")
         return True
     except Exception as exc:
         logger.info("archive extract failed: %s", exc)
@@ -826,50 +812,6 @@ def gather_deep_analysis_evidence(
     return evidence
 
 
-# =============================================================================
-# LangChain @tool wrappers — what the specialist ReAct nodes actually call.
-# They return JSON strings (agent-friendly). Pure functions above stay importable
-# for non-ReAct nodes that call them directly.
-# =============================================================================
-
-
-@tool
-def behavior_evidence_tool(request_json: str, artifact_download=None) -> str:
-    """Gather install-script and obfuscation evidence for one dependency.
-    Input: JSON matching DeepAnalysisRequest. Returns DeepAnalysisEvidence JSON
-    (behavior slice populated). Evidence only — contains no verdict."""
-    req = DeepAnalysisRequest.model_validate_json(request_json)
-    return gather_deep_analysis_evidence(req, dimensions=("behavior",)).model_dump_json()
-
-
-@tool
-def provenance_evidence_tool(request_json: str) -> str:
-    """Gather artifact-vs-source and recent-commit evidence for one dependency.
-    Input: JSON matching DeepAnalysisRequest. Returns DeepAnalysisEvidence JSON
-    (provenance slice populated). Evidence only — contains no verdict."""
-    req = DeepAnalysisRequest.model_validate_json(request_json)
-    return gather_deep_analysis_evidence(req, dimensions=("provenance",)).model_dump_json()
-
-
-@tool
-def identity_evidence_tool(request_json: str, nearest_popular: Optional[str] = None) -> str:
-    """Gather identity evidence for one dependency: README/SECURITY doc text (for
-    coercion/social-engineering analysis) AND registry provenance (publisher, canonical
-    repo, release history) for typosquat-vs-legitimate discrimination.
-    Input: JSON matching DeepAnalysisRequest; optional `nearest_popular` = the popular
-    package this name resembles (from the static typosquat signal). Returns
-    DeepAnalysisEvidence JSON (identity slice populated). Evidence only — no verdict."""
-    req = DeepAnalysisRequest.model_validate_json(request_json)
-    return gather_deep_analysis_evidence(
-        req, dimensions=("identity",), nearest_popular=nearest_popular
-    ).model_dump_json()
-
-
-# Backwards-compatible alias: the identity tool used to gather docs only; it now also
-# fetches registry provenance. Keep the old name working for any existing wiring.
-identity_doc_evidence_tool = identity_evidence_tool
-
-
 __all__ = [
     "DeepAnalysisRequest",
     "DeepAnalysisEvidence",
@@ -886,8 +828,4 @@ __all__ = [
     "extract_docs",
     "diff_artifact_vs_source",
     "extract_recent_commits",
-    "behavior_evidence_tool",
-    "provenance_evidence_tool",
-    "identity_evidence_tool",
-    "identity_doc_evidence_tool",
 ]

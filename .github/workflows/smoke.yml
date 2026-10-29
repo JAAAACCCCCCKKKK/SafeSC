@@ -14,6 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The one-command install and the start-up contract: `safesc` must refuse to run, with
+  # exit code 2 and an actionable message, at each step of LLM validation — before any
+  # agent, network call to a registry, or report. A real end-to-end audit needs a real
+  # LLM key and lives in safesc.yml; the offline end-to-end runs (real orchestrator,
+  # scripted model) are tests/test_attack_fixtures.py and tests/test_agents.py.
   cli-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -25,83 +30,30 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
+      - name: Install (single install, no extras)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . --group dev
+          python -m pip install .
 
-      - name: Create smoke fixture repository
+      - name: Help and version
+        run: |
+          safesc --help
+          safesc --version
+
+      - name: Start-up validation refuses misconfiguration in order
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          root = Path("smoke-fixture")
-          root.mkdir(exist_ok=True)
-          (root / "uv.lock").write_text(
-              'version = 1\nrequires-python = ">=3.12"\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = { virtual = "." }\n'
-          )
-          (root / "package-lock.json").write_text(
-              '{"lockfileVersion": 3, "packages": {"": {"name": "example"}}}'
-          )
-          (root / "Cargo.lock").write_text(
-              'version = 3\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc123"\n'
-          )
-          print(f"Created {root.resolve()}")
-          PY
-
-      - name: Discovery smoke test
-        run: python -m safesc.tools.index.core.discovery smoke-fixture
-
-      - name: Index JSON output smoke test
-        run: index --json smoke-fixture
-
-      - name: Scan signals smoke test
-        run: scan signals smoke-fixture
-
-  # Exercises the real agent path end-to-end: the tools adaptation layer
-  # (safesc.graph.spine.load_default_tools), the store-free bootstrap wiring, and — crucially —
-  # the real LangGraph compilation in safesc.graph.build.build_graph, none of which the unit
-  # tests cover (they inject a fake graph_factory). Runs fully offline against a clean
-  # fixture (0 real deps → no gray-zone fan-out → no LLM/network call), so a dummy BYOK
-  # key is enough and the gate must PASS (exit 0).
-  agent-path-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install the agent extra + Anthropic provider (matches SAFESC_LLM_PROVIDER below)
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[agent,anthropic]"
-
-      - name: Create clean fixture (virtual root only → 0 real deps)
-        shell: bash
-        run: |
-          mkdir -p agent-fixture
-          cat > agent-fixture/uv.lock <<'EOF'
-          version = 1
-          requires-python = ">=3.12"
-
-          [[package]]
-          name = "example"
-          version = "0.1.0"
-          source = { virtual = "." }
-          EOF
-
-      - name: safesc audit compiles the graph and gates PASS (offline, dummy key)
-        shell: bash
-        env:
-          SAFESC_LLM_API_KEY: dummy-key-not-used-on-clean-fixture
-          SAFESC_LLM_PROVIDER: anthropic
-        run: |
-          safesc audit agent-fixture --report-dir agent-reports --format all
-          test -f agent-reports/safesc-report.json
-          test -f agent-reports/safesc-report.sarif
-          test -f agent-reports/safesc-report.md
+          set +e
+          expect() {  # expect <grep pattern> -- <env assignments...>
+            pattern="$1"; shift
+            out="$(env -u LLM_PROVIDER -u LLM_MODEL -u LLM_API_KEY "$@" safesc 2>&1)"; code=$?
+            echo "$out"
+            if [ "$code" != "2" ] || ! printf '%s' "$out" | grep -q "$pattern"; then
+              echo "::error::expected exit 2 matching '$pattern', got exit $code"; exit 1
+            fi
+          }
+          expect "missing required environment variable"
+          expect "not a supported provider" LLM_PROVIDER=skynet LLM_MODEL=x LLM_API_KEY=k
+          expect "does not match provider" LLM_PROVIDER=openai LLM_MODEL=claude-sonnet-5 LLM_API_KEY=k
+          expect "cannot reach" LLM_PROVIDER=ollama LLM_MODEL=qwen3:8b LLM_API_KEY=k LLM_BASE_URL=http://127.0.0.1:9
+          expect "rejected LLM_API_KEY" LLM_PROVIDER=anthropic LLM_MODEL=claude-sonnet-5 LLM_API_KEY=sk-ant-invalid

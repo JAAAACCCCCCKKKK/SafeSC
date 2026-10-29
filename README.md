@@ -1,423 +1,249 @@
 # SafeSC
 
-**Supply-chain trust auditing for CI pipelines** — SafeSC discovers your dependency
-lockfiles, verifies provenance, and scores every dependency across five trust dimensions
-(identity, behavior, provenance, popularity, vulnerability). Deterministic signals do the
-heavy lifting; an LLM is used only to reason about the small, suspicious subset and can
-only *raise* severity, never lower it.
+**Agentic supply-chain trust auditing.** SafeSC discovers your dependency lockfiles and
+scores every dependency across five trust dimensions: identity, behavior, provenance,
+popularity and vulnerability. An orchestrator agent runs the deterministic checks and
+sends LLM subagents to investigate what looks wrong, including:
 
-- **Deterministic spine, agentic fan-out.** Stages 0–3 (discover → parse → verify hashes →
-  cheap signals) always run in a fixed order. Only gray-zone dependencies fan out to
-  LLM specialists (name-squatting, install-script intent, provenance gaps).
-- **Bring-your-own-key (BYOK).** You supply your own LLM key, provider, and model. SafeSC
-  holds no server-side key; keys never enter logs, reports, or persisted state.
-- **One-step CI gate.** A single GitHub Action installs SafeSC, runs the audit, uploads a
-  SARIF report to code scanning, archives artifacts, and fails the build on a critical
-  finding.
+- **account takeovers**: checking whether a release's code was really written by its
+  maintainer;
+- **unreported vulnerabilities**: hunting for them in the dependency's own source, with a
+  second agent verifying each finding independently.
 
----
-
-## Install
+A fixed set of deterministic rules then produces **one score per run**. It is built on
+[Strands Agents](https://strandsagents.com).
 
 ```bash
-pip install "safesc[agent,anthropic]"    # or [agent,openai]
+pip install safesc
+export LLM_PROVIDER=anthropic LLM_MODEL=claude-sonnet-5 LLM_API_KEY=sk-ant-...
+safesc
 ```
 
-> **`pip install safesc` alone is not enough for the CI gate.** The bare package ships the
-> deterministic Stage 0–3 tools (`index`, `scan`) only. The `agent` extra adds the
-> orchestration layer, and you must also pick a provider extra — SafeSC bundles no LLM SDK
-> because there is no default provider (BYOK). See [Optional extras](#optional-extras).
-
-Using the GitHub Action instead? It handles installation for you — skip to
-[Quick start](#quick-start--github-action).
+- **One install, one command.** `pip install safesc` brings the agent runtime and every
+  supported provider. With no arguments, `safesc` inspects the current directory, or the
+  checked-out repository in CI. Everything else is a flag.
+- **The agent never decides the verdict.** The static checks (discover → parse → verify
+  hashes → cheap signals) are tools that only agents invoke, and only in a fixed order.
+  Subagent findings go through a fixed fusion table and can only *raise* severity. The
+  score comes from deterministic rules, once per run.
+- **LLM and memory are required.** Every run validates your model first. Prior verdicts
+  and a curated library of known attacks are kept as local memory, with no service to run
+  and no second key.
 
 ---
 
-## Quick start — GitHub Action
-
-Add the following workflow to a **consumer** repository (e.g. `.github/workflows/safesc.yml`)
-and create a repository secret named `SAFESC_LLM_API_KEY` with your BYOK LLM key. There is
-**no default provider** — you must choose one:
+## Quick start: GitHub Action
 
 ```yaml
 name: SafeSC
-on: [push]
-
+on: [pull_request, push]
 permissions:
-  actions: read
   contents: read
-  security-events: write   # required to upload the SARIF report
-
+  security-events: write   # SARIF upload to code scanning
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: JAAAACCCCCCKKKK/SafeSC@v1
+      - uses: JAAAACCCCCCKKKK/SafeSC@v2
         with:
+          llm-provider: anthropic
+          llm-model: claude-sonnet-5
           llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
-          llm-provider: anthropic          # required: anthropic | openai
+          # with: authorship,vuln-hunt     # optional deeper analyses
 ```
 
-To pin a specific **model** or route to a custom **endpoint**, add the optional inputs:
+The action installs SafeSC and audits the repository. It uploads SARIF to code scanning,
+archives JSON/Markdown/SARIF reports, and fails the job when the gate fails. It also keeps
+SafeSC's memory between runs with the runner cache.
 
-```yaml
-      - uses: JAAAACCCCCCKKKK/SafeSC@v1
-        with:
-          target: "."                              # repo path, lockfile, or git URL
-          llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
-          llm-provider: openai                     # required: anthropic | openai
-          llm-model: gpt-4o                         # blank = provider default
-          llm-base-url: https://your-gateway/v1     # any OpenAI-compatible endpoint
-          format: all                               # all | json | markdown | sarif
-          report-dir: safesc-reports
-```
-
-### Action inputs
-
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `llm-api-key` | ✅ | — | BYOK reasoning-LLM API key for your chosen provider. Pass a secret. |
-| `llm-provider` | ✅ | — | `anthropic` or `openai` (also any OpenAI-compatible endpoint via `llm-base-url`). No default. |
-| `llm-model` | | provider default | Model id, e.g. `claude-sonnet-5`, `gpt-4o`. Blank = provider default. |
-| `llm-base-url` | | — | Override the LLM base URL (proxy / gateway / Bedrock / Azure / OpenAI-compatible). |
-| `target` | | `.` | Repo path, lockfile, or git URL to audit. |
-| `exclude` | | — | Gitignore-syntax patterns to exclude from discovery, one per line. See [Excluding paths](#excluding-paths). |
-| `format` | | `all` | Report format(s): `all` \| `json` \| `markdown` \| `sarif`. |
-| `report-dir` | | `safesc-reports` | Directory to write JSON / Markdown / SARIF artifacts. |
-| `github-token` | | `${{ github.token }}` | Authenticates SafeSC's GitHub API calls (Stage-3 popularity signals). The default is right for nearly everyone — see [GitHub API rate limits](#github-api-rate-limits). |
-| `python-version` | | `3.12` | Python version used to run SafeSC. |
-| `upload-sarif` | | `true` | Upload the SARIF report to GitHub code scanning. |
-| `upload-artifact` | | `true` | Archive `report-dir` as a build artifact. |
-| `artifact-name` | | `safesc-reports` | Name for the archived artifact. |
-| `redis-url` | | — | Enables checkpointing, fleet-wide rate limiting, the signal cache and prior-verdict recall. See [Optional memory layer](#optional-memory-layer). |
-| `pgvector-dsn` | | — | Adds similarity search + fingerprint grounding. Requires `embedding-api-key`. |
-| `embedding-api-key` | | — | BYOK embedding key. Required whenever `pgvector-dsn` is set. Pass a secret. |
-| `embedding-model` / `embedding-base-url` | | `voyage-4-large` | Embedding provider overrides. |
-| `embedding-dim` | | `1024` | pgvector column width. **Must** match the embedding model. Fixed at `store init`. |
-| `memory-strict` | | `false` | Fail if a configured store is unreachable, instead of auditing store-free. |
-| `store-init` | | `false` | Run `safesc store init` before auditing (needs DDL privileges; only needed once). |
-
-**Output:** `exit-code` — `0` = gate pass, `1` = gate fail on a critical finding.
-
-> **SARIF upload (code scanning).** `upload-sarif: true` needs the job to grant
-> `permissions: security-events: write` **and** a repo where code scanning is available
-> (public repos, or private repos with GitHub Advanced Security). If either is missing,
-> GitHub returns `Resource not accessible by integration`; SafeSC treats this as
-> **non-fatal** — it prints a warning, still archives the report artifact, and the audit's
-> exit code is unaffected. Set `upload-sarif: false` to skip the upload entirely.
-
----
-
-## Choosing your model & provider
-
-SafeSC is provider-agnostic for the reasoning LLM. A provider is **required** (there is no
-default) — pick one, optionally a model, and pass your own key via the Action inputs above,
-environment variables (CLI/CI), or API headers.
-
-| Provider | `llm-provider` | Default model | Notes |
-|---|---|---|---|
-| Anthropic | `anthropic` | `claude-sonnet-5` | Native Claude API. |
-| OpenAI | `openai` | `gpt-4o` | Native OpenAI API. |
-| OpenAI-compatible | `openai` + `llm-base-url` | *(set your own)* | Azure OpenAI, OpenRouter, Together, Groq, Ollama, vLLM, LiteLLM proxy… |
-
-Need another provider? Register one at runtime without editing SafeSC:
-
-```python
-from safesc.graph.llm_client import register_llm_provider
-register_llm_provider("my-provider", my_factory)   # my_factory(LLMCredentials) -> LLMClient
-```
-
----
-
-## CLI usage
-
-Install the CI tier — the orchestration extra **plus the SDK for your chosen provider**
-(no Redis/Postgres required):
-
-```bash
-pip install "safesc[agent,anthropic]"   # Anthropic provider
-pip install "safesc[agent,openai]"      # OpenAI / OpenAI-compatible provider
-```
-
-Then supply your key **and provider** via the environment and run:
-
-```bash
-export SAFESC_LLM_API_KEY=sk-ant-...
-export SAFESC_LLM_PROVIDER=anthropic     # required — no default
-
-# Full-repo audit (produces a CI exit code)
-safesc audit . --report-dir safesc-reports --format all
-
-# Single-package investigation (evidence only, never fails CI)
-safesc query npm:left-pad@1.3.0
-```
-
-Store-backed deployments get three more subcommands — `safesc store init`,
-`safesc fingerprint load`, and `safesc gc` — plus `--resume`; see
-[Optional memory layer](#optional-memory-layer).
-
-Use a different provider/model entirely through the environment:
-
-```bash
-export SAFESC_LLM_PROVIDER=openai
-export SAFESC_LLM_MODEL=gpt-4o
-export SAFESC_LLM_API_KEY=sk-...
-
-# Or a local OpenAI-compatible server (e.g. Ollama):
-export SAFESC_LLM_PROVIDER=openai
-export SAFESC_LLM_BASE_URL=http://localhost:11434/v1
-export SAFESC_LLM_MODEL=mixtral
-```
-
-The frozen Stage 0–3 tools are also exposed as standalone commands: `index` (discover /
-parse) and `scan` (verify / signals).
-
-### Environment variables
-
-| Variable | Required | Description |
+| Input | Default | Purpose |
 |---|---|---|
-| `SAFESC_LLM_API_KEY` | audit / query | BYOK reasoning-LLM key. Not read by `gc`, `store init` or `fingerprint load`. |
-| `SAFESC_LLM_PROVIDER` | audit / query | `anthropic` or `openai` — no default. Same exemption as above. |
-| `SAFESC_LLM_MODEL` | | Model id (blank = provider default). |
-| `SAFESC_LLM_BASE_URL` | | Override the LLM base URL. |
-| `SAFESC_EMBEDDING_API_KEY` | | Only if the optional memory layer is enabled. |
-| `SAFESC_EMBEDDING_BASE_URL` / `SAFESC_EMBEDDING_MODEL` | | Embedding provider overrides (default `voyage-4-large`). |
-| `SAFESC_REDIS_URL` | | Enables the memory layer's short-term half — see below. |
-| `SAFESC_PGVECTOR_DSN` | | Enables the long-term half (also needs an embedding key). |
-| `SAFESC_EMBEDDING_DIM` | | Vector column width. **Must** match your embedding model. Fixed at `store init`. |
-| `SAFESC_MEMORY_STRICT` | | `1` = fail if a configured store is unreachable, instead of degrading. |
-| `SAFESC_HOST_CONCURRENCY` / `SAFESC_HOT_TTL_S` | | Per-registry concurrency (`10`) and cache TTL (7 days). |
-| `SAFESC_LOG_LEVEL` | | SafeSC's own log verbosity (default `INFO`; `DEBUG` traces LLM requests). |
-| `SAFESC_DEEP_CACHE` | | Directory for Stage-4 clone/extract scratch data (default: system temp). |
+| `llm-provider`, `llm-model`, `llm-api-key` | — (required) | Your model; see [Providers](#providers) |
+| `llm-base-url` | — | Proxy / gateway / OpenAI-compatible endpoint |
+| `llm-context-window` | — | The model's context window in tokens (tunes context compression) |
+| `target` | the repository | Path, lockfile or package spec |
+| `with` | — | `authorship`, `vuln-hunt`, `transitive`, `github`, `all` (comma-separated) |
+| `exclude` | — | Gitignore patterns, one per line |
+| `fail-on` | `HIGH` | Gate threshold |
+| `strict` | `false` | Fail when the analysis is incomplete |
+| `max-subagents` | `40` | Subagent invocations per run (cost ceiling) |
+| `github-token` | job token | GitHub API auth (and the GitHub MCP server with `with: github`) |
+| `report-dir` / `format` | `safesc-reports` / `all` | Report output |
+| `upload-sarif` / `upload-artifact` | `true` | Publishing |
 
-Only `audit` and `query` need an LLM key. The three maintenance commands — `gc`,
-`store init`, `fingerprint load` — return before any reasoning credential is read, so a
-CronJob can hold a store/embedding key alone and no reasoning key at all.
-
-The last four rows have **no Action input**, by design: they are tuning and debugging
-knobs rather than deployment wiring. They still work from a workflow, because a composite
-action inherits job-level environment and the Action's own `env:` block does not name
-them:
-
-```yaml
-env:                        # job level — passes through to the Action
-  SAFESC_LOG_LEVEL: DEBUG
-  SAFESC_HOST_CONCURRENCY: "4"
-steps:
-  - uses: JAAAACCCCCCKKKK/SafeSC@v1
-    with:
-      llm-api-key: ${{ secrets.SAFESC_LLM_API_KEY }}
-      llm-provider: anthropic
-```
+Output `exit-code`: `0` pass · `1` gate failed · `2` configuration error or no verdict.
 
 ---
 
-## GitHub API rate limits
-
-Stage 3's popularity collectors call the GitHub REST API (archived status, stars, last
-push). **Anonymous access is 60 requests/hour per IP, shared across GitHub-hosted
-runners**, so any real dependency tree exhausts it and you will see:
-
-```
-WARNING:safesc.tools.scan.signals.collector:collector ArchivedRepoCollector degraded for
-  <pkg>: 1 unanswered request(s), first=https://api.github.com/repos/<owner>/<repo>
-```
-
-The Action authenticates with the job's own `GITHUB_TOKEN` by default (1000 requests/hour),
-so this should not appear. If it does, either `github-token` was explicitly set to an empty
-value, or you are running the CLI outside Actions -- export `GITHUB_TOKEN` (or `GH_TOKEN`)
-there too.
-
-This is worth fixing rather than ignoring. Popularity is deliberately **not** cached (§3.1
--- an archived repo is exactly the fact that changes under a pinned version), so it is
-re-collected on every run: an unauthenticated audit loses the signal on every run, not once.
-It fails toward *cleaner*, which is why the collector now warns instead of degrading
-silently.
-
----
-
-## Optional memory layer
-
-SafeSC runs fine with no external stores, and that is the default — a CI audit is a single
-finite run. Attaching a store makes audits **faster, politer to registries, and better
-grounded**. It cannot make them more permissive; see the invariant below.
-
-| Store | What you get |
-|---|---|
-| **Redis** (`SAFESC_REDIS_URL`) | Checkpointing, so `safesc audit . --resume` reattaches to an interrupted run · fleet-wide per-registry rate limiting shared across concurrent audits · a 7-day cross-run cache of the cheap signals that cannot change for a pinned `name@version` · exact-hash recall of prior verdicts. **Needs no second API key.** |
-| **Postgres + pgvector** (`SAFESC_PGVECTOR_DSN`) | Adds *similarity* search — behaviourally related prior findings, and a curated known-attack fingerprint corpus — as grounding for Stage-4 LLM analysis. Requires an embedding key. Also hosts the `--resume` checkpointer, which is used in preference to Redis's once `safesc store init` has created its tables. |
-
-Either half works alone. Redis-only is the cheapest useful configuration: everything
-except similarity search, with one store and no extra key.
+## CLI
 
 ```bash
-pip install "safesc[agent,anthropic,memory]"
+safesc                              # this directory (in CI: the repository root)
+safesc path/to/project              # another project, or a single lockfile
+safesc npm:left-pad@1.3.0           # one package (also pkg:pypi/requests@2.31.0, crates:serde@1.0.200)
 
-export SAFESC_REDIS_URL=redis://localhost:6379/0
-export SAFESC_PGVECTOR_DSN=postgresql://user:pw@localhost:5432/safesc   # optional
-export SAFESC_EMBEDDING_API_KEY=pa-...                                  # with pgvector only
+safesc --with authorship            # + code-style authorship analysis of every direct dependency
+safesc --with vuln-hunt             # + unreported-vulnerability hunt and independent verification
+safesc --with authorship,vuln-hunt,transitive   # ... extended to transitive dependencies
+safesc --with github                # + GitHub MCP tools for subagents (needs GITHUB_TOKEN)
+safesc --with all
 
-safesc store init                             # once: create the pgvector schema
-safesc fingerprint load                       # once: ingest the shipped attack corpus
-safesc audit .                                # now cached + grounded
-safesc gc                                     # periodically: retention sweep (CronJob)
+safesc --report-dir out --format sarif     # write reports (all | json | markdown | sarif)
+safesc --fail-on MEDIUM --strict           # stricter gate; incomplete analysis fails
+safesc --exclude "tests/fixtures/**"       # skip paths (layers on .safescignore)
+safesc --max-subagents 80                  # allow more subagent invocations
+safesc --memory-dir ~/.safesc-memory       # memory location
+safesc --mcp https://intel.example/mcp     # attach your own read-only MCP server
+safesc -q | -v                             # quiet / debug
 ```
 
-#### Choosing the embedding model
+Progress goes to stderr, one line per tool call. The verdict, trust score (0–100, A–F) and
+summary go to stdout.
 
-The default is **`voyage-4-large`** at **1024** dimensions. You are not locked to it — set
-`SAFESC_EMBEDDING_MODEL`, or point `SAFESC_EMBEDDING_BASE_URL` at any OpenAI-compatible
-`/embeddings` endpoint (OpenAI, Cohere, Google, a gateway, a local server) and SafeSC will
-use that instead.
+### Environment
 
-The reason for this particular default is that the whole voyage-4 family — `voyage-4-large`,
-`voyage-4`, `voyage-4-lite`, `voyage-4-nano` — **shares one embedding space**, so vectors
-written by one are directly comparable to vectors written by another. Moving between tiers
-to trade accuracy against cost is a config change, not a migration: your existing corpus
-stays valid and does not need re-embedding.
+| Variable | Required | Meaning |
+|---|---|---|
+| `LLM_PROVIDER` | **yes** | One of the providers below |
+| `LLM_MODEL` | **yes** | A model that provider serves |
+| `LLM_API_KEY` | **yes** | Your key for that provider |
+| `LLM_BASE_URL` | no | Proxy, gateway, or OpenAI-compatible endpoint |
+| `LLM_CONTEXT_WINDOW` | no | Context window in tokens (default assumption: 200k) |
+| `SAFESC_MEMORY_DIR` | no | Memory directory (default: the user cache dir) |
+| `GITHUB_TOKEN` / `GH_TOKEN` | no | GitHub API rate limits (60/h anonymous vs 1000/h) |
+| `AWS_REGION` | no | Bedrock region (default `us-east-1`) |
 
-Two things still do force a full re-index, because neither is covered by the shared space:
+### Start-up checks
 
-- **Changing `SAFESC_EMBEDDING_DIM`.** The width is interpolated into the DDL as
-  `vector(N)` at `safesc store init`, so it is a schema change regardless of which model
-  wrote the vectors. Pick the width once, then move tiers freely at that width.
-- **Leaving the family** — voyage-3, OpenAI, Cohere. Those embedding spaces are unrelated
-  to voyage-4's, so old and new vectors are not comparable even at an identical width.
+Before any agent runs, SafeSC checks the LLM in this order and stops with exit code 2 and
+a precise message at the first failure:
 
-To re-index: drop the table, re-run `safesc store init` with the new settings, and
-`safesc fingerprint load`. Prior verdicts are rebuilt by subsequent audits; the Redis half
-is unaffected, since exact-hash recall uses no embeddings at all.
+1. all three variables are set;
+2. the provider is supported;
+3. the model id belongs to that provider (for example `gpt-5` with `LLM_PROVIDER=anthropic`
+   is rejected, with a hint);
+4. the provider endpoint is reachable. For Ollama, the model must also be pulled;
+5. one minimal authenticated call succeeds. A failure is reported as a rejected key, an
+   unavailable model, or an unreachable host. The key is scrubbed from every message.
 
-**This can only ever make SafeSC stricter, never more permissive.** Retrieved memory
-reaches the LLM as prior context that may raise concern but is structurally incapable of
-lowering a verdict — it is never merged into the signal set, and a specialist that agrees
-with a prior finding must re-derive it from current evidence. That is why a configured but
-unreachable store only prints a warning and audits without it. Set `SAFESC_MEMORY_STRICT=1`
-if you would rather that be a hard error. Only `safesc fingerprint load` writes
-fingerprints — an audit run cannot — and the corpus lives in version control under
-`fingerprints/`.
+Then the memory directory must be writable.
 
-### Using it from CI
+### Providers
 
-The store has to **outlive the job**. A `services:` container does not: it is recreated per
-job, so the cache starts empty every run, checkpoints are unreachable, and rate limiting is
-scoped to a single audit — you pay for the store and get none of the four benefits. Use a
-**managed store** reachable over the network (from GitHub-hosted runners) or a
-**self-hosted runner** beside your own instances.
+Every model provider Strands ships that authenticates with an API key:
 
-**Step 1 — one-time setup.** Do this *before* the first audit, in its own
-`workflow_dispatch` workflow. `store init` creates the pgvector schema; without it every
-audit logs `relation "safesc_memory" does not exist` and silently keeps no long-term
-memory. Keep it out of the audit workflow — re-ingesting the fingerprint corpus on every
-run just burns embedding calls rewriting identical rows.
+| `LLM_PROVIDER` | Example `LLM_MODEL` | Notes |
+|---|---|---|
+| `anthropic` | `claude-sonnet-5` | |
+| `openai` | `gpt-5`, `o4-mini` | Any model id behind `LLM_BASE_URL` (OpenRouter, Groq, vLLM, Azure, …) |
+| `openai_responses` | `gpt-5` | OpenAI Responses API |
+| `bedrock` | `us.anthropic.claude-sonnet-5` | Bedrock API key; `AWS_REGION` selects the region |
+| `gemini` | `gemini-2.5-pro` | |
+| `mistral` | `mistral-large-latest` | |
+| `litellm` | `groq/llama-3.3-70b-versatile` | `provider/model` form |
+| `llamaapi` | `Llama-3.3-70B-Instruct` | Deprecated upstream (Meta retired the Llama API) |
+| `ollama` | `qwen3:32b` | Local server: key unused but required (any value) |
+| `llamacpp` | `default` | Local server: key is sent as a bearer token if it requires one |
+| `writer` | `palmyra-x5` | |
 
-```yaml
-- run: |
-    pip install "safesc[agent,anthropic,memory]"
-    safesc store init
-    safesc fingerprint load
-  env:
-    SAFESC_PGVECTOR_DSN:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
-    SAFESC_EMBEDDING_API_KEY: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
-    # Both MUST match what the audit workflow uses. `store init` bakes the width into the
-    # column as vector(N); omit it and you get vector(1024) whatever your model emits, and
-    # every later insert fails on a dimension mismatch.
-    SAFESC_EMBEDDING_DIM:     "1024"
-    SAFESC_EMBEDDING_MODEL:   voyage-4-large
+SageMaker is not supported: its endpoints authenticate with AWS SigV4, not an API key. Use
+`bedrock` instead.
+
+---
+
+## How it works
+
+```
+safesc ─► validate LLM ─► open memory ─► orchestrator agent
+                                           │  discover_lockfiles → parse_dependencies →
+                                           │  verify_hashes → collect_signals       (static tools, fixed order)
+                                           │  required_analyses                     (what the gate demands)
+                                           ├─► identity_analyst    ┐
+                                           ├─► behavior_analyst    │ subagents (agents-as-tools):
+                                           ├─► provenance_analyst  │ own context, evidence tools,
+                                           ├─► authorship_analyst  │ memory, structured output
+                                           ├─► vuln_hunter ──► vuln_verifier
+                                           └─► finalize_score  ─► deterministic score, once
 ```
 
-**Step 2 — the audit workflow.** Once the schema exists, point the Action at the same
-stores:
+- **Static stages are agent tools.** The orchestrator calls them. They take no target
+  argument (it is fixed before any agent starts), refuse to run out of order, and run
+  once. A steering handler gives the same rules as feedback before a call is made.
+- **The gate decides what must be looked at.** Gray-zone signals (MEDIUM up to below
+  CRITICAL, on identity, behavior or provenance) and your `--with` features become
+  *required analyses*. `finalize_score` is refused until each one has been attempted or
+  the subagent budget is spent. Beyond that, the orchestrator explores what it judges
+  risky.
+- **Subagents produce evidence, not verdicts.** Each one fills a structured output. Its
+  file citations must match evidence its tools actually showed it, or it is asked to
+  repair; repeated failure is recorded as a coverage gap. The deterministic fusion table
+  maps it to a signal that can only raise severity.
+- **Authorship.** `profile_authorship` measures code-style and commit-habit drift between
+  the release window and each author's history (or the established maintainers'):
+  indentation, quoting, naming, comment density, message style, timezone, hours, signing,
+  email domain. The subagent decides whether the drift is a formatter change or different
+  hands behind a trusted account.
+- **Unreported vulnerabilities.** `vuln_hunter` fetches the published source and starts
+  from a deterministic scan for unsafe functions (`strcpy`, `gets`, …), unsalted or fast
+  hashing of passwords and tokens, injection and deserialization sinks, disabled TLS,
+  predictable randomness for secrets, hard-coded secrets, and imports of modules with
+  published problems. It also checks the package's own dependencies against OSV. It only
+  registers *candidates*. `vuln_verifier`, a separate agent with a fresh context, must
+  confirm each one. A confirmed flaw's severity is capped by its assessed impact; only an
+  intentional backdoor fuses as malicious.
+- **Tools.** Subagents get read-only evidence tools, the Strands-vended `web_fetch` (in
+  agentic mode, so raw pages never enter their context), a read-only `file_editor`
+  confined to fetched source, and MCP servers you attach. No agent ever gets a shell or
+  code execution: SafeSC reads untrusted code and never runs it.
+- **Memory.** Verdicts per exact artifact (`name@version+hash`) and the curated
+  known-attack corpus (`fingerprints/`) are injected into subagent prompts as *prior
+  findings*. They are context only and can never lower an assessment. Memory is written
+  once, after the score exists.
+- **Fail closed.** If the orchestrator never finalizes, the run has no verdict and exits 2.
 
-```yaml
-- uses: JAAAACCCCCCKKKK/SafeSC@v1
-  with:
-    llm-api-key:       ${{ secrets.SAFESC_LLM_API_KEY }}
-    llm-provider:      anthropic
-    redis-url:         ${{ secrets.SAFESC_REDIS_URL }}
-    pgvector-dsn:      ${{ secrets.SAFESC_PGVECTOR_DSN }}
-    embedding-api-key: ${{ secrets.SAFESC_EMBEDDING_API_KEY }}
-```
+### The score
 
-The `memory` extra is installed only when one of those is set, so consumers who do not use
-a store pay nothing for it. Gating behaviour is unchanged: the audit still exits `1` on a
-failing gate.
+The **gate** fails when any dependency reaches `--fail-on` (HIGH by default).
 
-If you would rather not run step 1 separately, the Action's `store-init: true` input runs
-`safesc store init` before the audit — but it needs DDL privileges on every run, so a
-dedicated setup workflow is the better default.
+The **trust score** is 100 minus a penalty per dependency (LOW 1, MEDIUM 4, HIGH 15,
+CRITICAL 40), with these caps:
 
-**Step 3 — maintenance.** `safesc gc` belongs on a nightly cron (or a Kubernetes CronJob),
-never inside an audit.
+- any HIGH caps the score at 59;
+- any CRITICAL caps it at 19;
+- an incomplete analysis caps it at 89.
 
-Two things that are *not* SafeSC bugs when you see them in the log:
-
-- `postgres checkpointer unavailable (checkpoint tables missing; run `safesc store init`);
-  falling back to the Redis checkpointer` — `--resume` still works, on Redis. Run
-  `safesc store init` once to move checkpoints to Postgres. Both checkpointers use only
-  plain commands, so Upstash and other managed Redis without RediSearch are fine.
-- A store that is configured but unreachable prints a warning and the audit continues
-  store-free. That is deliberate (§3.3). Set `memory-strict: true` / `SAFESC_MEMORY_STRICT=1`
-  if a silently store-free audit should instead be a hard failure.
+Grades: A ≥ 90, B ≥ 75, C ≥ 60, D ≥ 40, F below that. The score never overrides the gate.
 
 ---
 
 ## Supported ecosystems
 
-Python (uv / poetry / pip), npm / pnpm, Cargo (Rust), Go modules, and Maven / Gradle (Java).
+Python (uv / poetry / pip / Pipfile), npm / pnpm / yarn, Cargo, Go modules, Maven / Gradle.
 
 ## Excluding paths
 
-SafeSC discovers dependency files by walking the target directory. To permanently
-exclude paths (e.g. test fixtures, vendored copies, generated directories), add a
-`.safescignore` file at the target root — gitignore syntax, auto-discovered with no
-flag needed:
+Add a `.safescignore` (gitignore syntax) at the target root, or pass `--exclude PATTERN`
+(repeatable, layered on top). The Action's `exclude` input takes one pattern per line.
 
-```
-# .safescignore
-tests/fixtures/**
-vendor/
-```
+## GitHub API rate limits
 
-For a one-off exclusion without committing a file, every entrypoint also accepts a
-repeatable `--exclude PATTERN` flag, which layers on top of (never replaces) a
-`.safescignore` file:
-
-```bash
-safesc audit . --exclude "tests/fixtures/**"
-index discover . --exclude "vendor/**"
-scan signals . --exclude "vendor/**"
-```
-
-The GitHub Action exposes the same thing as the `exclude` input (one pattern per line).
-Patterns are gitignore syntax, matched against the path relative to the scanned root.
+Popularity checks call the GitHub REST API, which allows only 60 anonymous requests per
+hour per IP. The Action authenticates with the job token by default. Outside Actions,
+export `GITHUB_TOKEN` or `GH_TOKEN`.
 
 ## Reports
 
-Every run can emit **SARIF** (for GitHub code scanning), **Markdown** (human-readable), and
-**JSON** (machine-readable), written as `safesc-report.{sarif,md,json}`.
-
-## Optional extras
-
-| Extra | Installs | Purpose |
-|---|---|---|
-| `agent` | LangGraph | CI-tier orchestration: spine + LLM specialists (no provider SDK). |
-| `anthropic` | Anthropic SDK | Anthropic (Claude) provider. |
-| `openai` | OpenAI SDK | OpenAI and OpenAI-compatible providers. |
-| `memory` | Redis + Postgres/PGVector | Optional memory layer: checkpointing, fleet-wide rate limiting, signal caching, and retrieval grounding. Never lowers a verdict. |
-
-Without any extra, `pip install safesc` gives you the frozen Stage 0–3 tools (`index`,
-`scan`) — deterministic discovery, parsing, hash verification, and cheap signals — but not
-the `safesc audit` CI gate, which requires `agent` plus a provider extra.
+`--report-dir` writes `safesc-report.{json,md,sarif}`. Reports include per-dependency
+signals with evidence, the trust score and grade, vulnerability candidates with their
+verification status, every subagent run, and any coverage gaps.
 
 ## Security
 
-SafeSC is a security tool and treats your credentials as load-bearing: keys are held as
-`SecretStr`, threaded by injection only, and **never** enter the audit state (which may be
-checkpointed to Redis), logs, reports, or the vector store. There is no ambient/shared key
-fallback — a missing key is a hard error.
+Keys are held as `SecretStr`, passed only by injection, and scrubbed from errors. They
+never appear in the run ledger, memory, logs or reports. Dependency code is downloaded and
+safe-extracted (traversal and link protection) or shallow-cloned with hooks disabled. It is
+never installed, built or executed.
 
 ## License
 
